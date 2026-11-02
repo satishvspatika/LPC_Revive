@@ -1,0 +1,1082 @@
+#include "globals.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "memory.h"
+#include "ui.h"
+#include "gprs.h"
+
+typedef void(*IAP)(unsigned long[], unsigned long[]);
+IAP iap_entry;
+
+Days_Data_def *days_sector[MAX_NO_OF_DAYS]= {
+		(Days_Data_def *) 0x00002000,
+		(Days_Data_def *) 0x00003000,
+		(Days_Data_def *) 0x00004000,
+		(Days_Data_def *) 0x00005000,
+		(Days_Data_def *) 0x00006000,
+		(Days_Data_def *) 0x00007000,
+		(Days_Data_def *) 0x00008000 };
+
+unsigned long command_iap[6];
+unsigned long result_iap[5];
+
+int *write_buf_ptr, *sector_data_ptr;
+unsigned int dest_addr;
+Days_Data_def *days_storage_ptr;
+
+void *data_buf_dest_rec, *recMemAdd;
+Samples_def store_rec;
+
+int write_days_data(Samples_def *rec_data, uint8_t curDate, uint8_t curMonth, uint16_t curYear){
+
+	int sect, found, recNo, i;
+	int hr, min, rf, recBlk, recSt, write_512b, src, dest, recLen;
+	int recBlk_start, recSt_offset, write_count;
+	int sect_date, sect_month, sect_year;
+	int cur_date_val, recent_date_val;
+
+	for(sect=2, found=0; ((sect<4) && !found);){
+		//if(days_sector[sect-2]->date == curDate)
+		if((days_sector[sect-2]->year == curYear) && (days_sector[sect-2]->month == curMonth) && (days_sector[sect-2]->date == curDate))
+			found =1;
+		else
+			sect++;
+	}
+
+	if(!found){
+		next_sect = 2;  //if all data sectors are free directly allot  sector
+		if((days_sector[0]->year == 0xFFFF) || (days_sector[0]->month == 0xFF) || (days_sector[0]->date == 0xFF)){
+			next_sect = 2;
+		}
+		else if((days_sector[1]->year == 0xFFFF) || (days_sector[1]->month == 0xFF) || (days_sector[1]->date == 0xFF)){
+			next_sect = 3;
+		}
+
+		else{
+			cur_date_val = curYear*256*256 + curMonth*256 + curDate;
+			recent_date_val = latest_year*256*256 + latest_month*256 + latest_date;
+
+			if(cur_date_val < recent_date_val)
+				next_sect = latest_Sector;
+			else
+				next_sect = oldest_Sector;
+		}
+
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+		sect = allocate_space(curDate, curMonth, curYear);
+		vTaskDelay(10 / portTICK_RATE_MS);
+	}
+
+	vTaskDelay(10 / portTICK_RATE_MS);
+
+	present_sector_no = sect;
+	present_sample_no = sampleNo;
+
+	write_buf_ptr = (int *)local_write_buf_st;
+	sector_data_ptr = (int *)days_sector[sect-2];
+
+	dest_addr = (unsigned int)days_sector[sect-2];
+	for(i=0; i<1024; i++)
+		*write_buf_ptr++ = *sector_data_ptr++;
+
+	//now set the start address of the days_sector
+	days_storage_ptr =  (Days_Data_def *)local_write_buf_st;
+
+	days_storage_ptr->last_rec_hr = rec_data->hour;
+	days_storage_ptr->last_rec_min = rec_data->minute;
+	days_storage_ptr->samples[present_sample_no].hour = rec_data->hour;
+	days_storage_ptr->samples[present_sample_no].minute = rec_data->minute;
+	days_storage_ptr->samples[present_sample_no].rf = rec_data->rf;
+	days_storage_ptr->samples[present_sample_no].battery1 = rec_data->battery1;
+	days_storage_ptr->samples[present_sample_no].battery2 = rec_data->battery2;
+	days_storage_ptr->samples[present_sample_no].signal = rec_data->signal;
+	days_storage_ptr->samples[present_sample_no].disk_status = rec_data->disk_status;
+	days_storage_ptr->samples[present_sample_no].http_status = rec_data->http_status;
+	days_storage_ptr->samples[present_sample_no].ftp_status = rec_data->ftp_status;
+	days_storage_ptr->samples[present_sample_no].sms_status = rec_data->sms_status;
+	days_storage_ptr->samples[present_sample_no].year = rec_data->year;
+	days_storage_ptr->samples[present_sample_no].month = rec_data->month;
+	days_storage_ptr->samples[present_sample_no].date = rec_data->date;
+	days_storage_ptr->samples[present_sample_no].temperature = rec_data->temperature;
+	days_storage_ptr->samples[present_sample_no].humidity = rec_data->humidity;
+	days_storage_ptr->samples[present_sample_no].wind_direction = rec_data->wind_direction;
+	days_storage_ptr->samples[present_sample_no].wind_speed = rec_data->wind_speed;
+	days_storage_ptr->samples[present_sample_no].ws_sec_cnt = rec_data->ws_sec_cnt;
+
+
+	/*
+	// prepare for erase
+	Prepare_Sector(sect, sect);
+	vTaskDelay(2 / portTICK_RATE_MS);
+	__disable_irq();
+	Erase_Sector(sect, sect);
+	vTaskDelay(2 / portTICK_RATE_MS);
+	__enable_irq();
+
+
+	// prpare for write
+	Prepare_Sector(sect, sect);
+	vTaskDelay(2 / portTICK_RATE_MS);
+
+	// write all 4 K
+	Write_Sector(dest_addr, (unsigned int) local_write_buf_st, 4096);
+
+	vTaskDelay(2 / portTICK_RATE_MS);
+	 */
+
+	// prepare for erase
+
+	//steps
+	//1 prepare and erase sector if erase status is error once again try prepare and erase sector
+	//2 If still erase status is error we are not writing in flash
+	//3 If erase success then prepare and write sector
+	//4 if write status is error once again try for prepare and erase then prepare and write.
+
+	erase_status = 1;
+	write_status = 1;
+
+	Prepare_Sector(sect, sect);
+	vTaskDelay(2 / portTICK_RATE_MS);
+	__disable_irq();
+	erase_status = Erase_Sector(sect, sect);
+	__enable_irq();
+
+
+	if(erase_status != 0){
+		Prepare_Sector(sect, sect);
+		vTaskDelay(2 / portTICK_RATE_MS);
+		__disable_irq();
+		erase_status = Erase_Sector(sect, sect);
+		__enable_irq();
+	}
+
+	//	erase_status = Blank_Check_Sector(sect, sect);
+	vTaskDelay(2 / portTICK_RATE_MS);
+
+	if(erase_status == 0){
+		// prpare for write
+		Prepare_Sector(sect, sect);
+		vTaskDelay(2 / portTICK_RATE_MS);
+
+		__disable_irq();
+		// write all 4 K
+		write_status = Write_Sector(dest_addr, (unsigned int) local_write_buf_st, 4096);
+		__enable_irq();
+
+		if(write_status != 0){
+
+			Prepare_Sector(sect, sect);
+			vTaskDelay(2 / portTICK_RATE_MS);
+			__disable_irq();
+			erase_status = Erase_Sector(sect, sect);
+			if(erase_status == 0){
+
+				// prpare for write
+				Prepare_Sector(sect, sect);
+				vTaskDelay(2 / portTICK_RATE_MS);
+
+				__disable_irq();
+				write_status = Write_Sector(dest_addr, (unsigned int) local_write_buf_st, 4096);
+				__enable_irq();
+			}
+		}
+		/*	int cmp_status;
+		cmp_status = 1;
+		cmp_status = Compare_Sector(dest_addr, (unsigned int) local_write_buf_st, 4096);
+		 */
+		vTaskDelay(2 / portTICK_RATE_MS);
+	}
+	vTaskDelay(1 / portTICK_RATE_MS);
+}
+
+
+int allocate_space(uint8_t curDate, uint8_t curMonth, uint16_t curYear)
+{
+	char write_buf[512];
+	int i;
+	erase_n_format_sector(next_sect);
+	// prepare the 512 byte write_buf;
+	for(i=0;i<512;i++){
+		write_buf[i] = 0xFF;
+	}
+	/*dateVal.date = 9;
+	dateVal.month = 10;
+	dateVal.year = 2020;*/
+	dateVal = (Days_Data_def *)&write_buf[0];
+
+	dateVal->date = curDate;
+	dateVal->month = curMonth;
+	dateVal->year = curYear;
+
+
+	vTaskDelay(2 / portTICK_RATE_MS);
+
+	// program this buffer to sector (oldPosn) for 256 bytes
+	Prepare_Sector(next_sect, next_sect);
+	Write_Sector((unsigned int)days_sector[next_sect-2], (unsigned int)&write_buf[0], 256);
+
+	vTaskDelay(2 / portTICK_RATE_MS);
+	return(next_sect);
+
+}
+
+void erase_n_format_sector(int sector){
+	int i;
+
+	Prepare_Sector(sector, sector);
+	vTaskDelay(2 / portTICK_RATE_MS);
+	__disable_irq();
+	Erase_Sector(sector, sector);
+	vTaskDelay(2 / portTICK_RATE_MS);
+	__enable_irq();
+
+}
+
+
+void init_entire_space(void){
+	int i;
+
+	Prepare_Sector(ST_DATA_SECTOR, END_DATA_SECTOR);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	__disable_irq();
+	Erase_Sector(ST_DATA_SECTOR, END_DATA_SECTOR);
+	vTaskDelay(20 / portTICK_RATE_MS);
+	__enable_irq();
+
+}
+
+short int Erase_Sector(int Start_Sec_No, int End_Sec_No) {
+	command_iap[0] = 52;
+	command_iap[1] = Start_Sec_No;
+	command_iap[2] = End_Sec_No;
+	command_iap[3] = XOSC;
+	iap_entry = (IAP) IAP_LOCATION;
+	iap_entry(command_iap, result_iap);
+	return (result_iap[0]);
+}
+
+
+short int Blank_Check_Sector(int Start_Sec_No, int End_Sec_No) {
+	command_iap[0] = 53;
+	command_iap[1] = Start_Sec_No;
+	command_iap[2] = End_Sec_No;
+	command_iap[3] = XOSC;
+	iap_entry = (IAP) IAP_LOCATION;
+	iap_entry(command_iap, result_iap);
+	return (result_iap[0]);
+}
+
+short int Prepare_Sector(int Start_Sec_No, int End_Sec_No) {
+	command_iap[0] = 50;
+	command_iap[1] = Start_Sec_No;
+	command_iap[2] = End_Sec_No;
+	iap_entry = (IAP) IAP_LOCATION;
+	iap_entry(command_iap, result_iap);
+	return (result_iap[0]);
+}
+
+short int Write_Sector(unsigned int Dest_Addr, unsigned int Source_Addr,
+		int Bytes) {
+
+	command_iap[0] = 51;
+	command_iap[1] = Dest_Addr;
+	command_iap[2] = Source_Addr;
+	command_iap[3] = Bytes;
+	command_iap[4] = XOSC;
+	iap_entry = (IAP) IAP_LOCATION;
+	iap_entry(command_iap, result_iap);
+
+	return (result_iap[0]);
+}
+
+short int Compare_Sector(unsigned int Dest_Addr, unsigned int Source_Addr,
+		int Bytes) {
+
+	command_iap[0] = 56;
+	command_iap[1] = Dest_Addr;
+	command_iap[2] = Source_Addr;
+	command_iap[3] = Bytes;
+	command_iap[4] = XOSC;
+	iap_entry = (IAP) IAP_LOCATION;
+	iap_entry(command_iap, result_iap);
+
+	return (result_iap[0]);
+}
+
+
+void params_default(void){
+	//	strcpy(Global_Data_Params.gc_station_id, "001920");
+	strcpy(Global_Data_Params.gc_station_id, "001060");
+
+	strcpy(Global_Data_Params.gc_station_name, "SPATIKA");
+	strcpy(Global_Data_Params.gc_model, "SPATIKA");
+
+	strcpy(Global_Data_Params.gc_network_name, "KSNDMC");
+	strcpy(Global_Data_Params.gc_station_type, "TWS");
+
+	strcpy(Global_Data_Params.gc_master_gsm, "+919449020611");
+	strcpy(Global_Data_Params.gc_universal_gsm, "+919980945474");
+	strcpy(Global_Data_Params.gc_secondary_gsm, "+919591452670");
+	strcpy(Global_Data_Params.gc_secondary_gsm1, "+919164592005");
+
+	strcpy(Global_Data_Params.gc_version, "TWS2-1.0.0");
+
+	strcpy(Global_Data_Params.gc_http_server_name1, "rtdas.ksndmc.net");
+	strcpy(Global_Data_Params.gc_http_link1, "/tws_gprs/update_tws_data_v2");
+	strcpy(Global_Data_Params.gc_http_key1, "climate4p2013");
+	Global_Data_Params.gi_http_server_port1 = 80;
+
+	strcpy(Global_Data_Params.gc_http_server_name2, "rtdas.ksndmc.net");
+	strcpy(Global_Data_Params.gc_http_link2, "/tws_gprs/update_tws_data_v2");
+	strcpy(Global_Data_Params.gc_http_key2, "climate4p2013");
+	Global_Data_Params.gi_http_server_port2 = 80;
+
+	strcpy(Global_Data_Params.gc_ftp_server_name1, "ftp1.ksndmc.net");
+	strcpy(Global_Data_Params.gc_ftp_user1, "tws_spatika_v2");
+	strcpy(Global_Data_Params.gc_ftp_pwd1, "twssp#987");
+	strcpy(Global_Data_Params.gc_ftp_path1, "/");
+	Global_Data_Params.gi_ftpserver_port1 = 21;
+
+	strcpy(Global_Data_Params.gc_ftp_server_name2, "dota.spatika.net");
+	strcpy(Global_Data_Params.gc_ftp_user2, "dota_dmc");
+	strcpy(Global_Data_Params.gc_ftp_pwd2, "airdata2016");
+	strcpy(Global_Data_Params.gc_ftp_path2, "/");
+	Global_Data_Params.gi_ftpserver_port2 = 21;
+
+	Global_Data_Params.gi_log_interval = LOG_INTERVAL;
+	Global_Data_Params.gi_report_interval = REPORT_INTERVAL;
+	Global_Data_Params.gi_sim_select = sim_select;
+	Global_Data_Params.gi_send_data_sms = 1;
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].svc, "+9198");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].apn, "airtelgprs.com");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].apn_user, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].apn_pwd, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].mobile_network, "airtel");
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].svc, "+9194");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].apn, "bsnl.net");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].apn_user, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].apn_pwd, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].mobile_network, "BSNL");
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].svc, "+91984");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].apn, "www");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].apn_user, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].apn_pwd, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].mobile_network, "Vodafone");
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].svc, "+919804");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].apn, "internet");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].apn_user, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].apn_pwd, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].mobile_network, "Idea");
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].svc, "+9170");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].apn, "jionet");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].apn_user, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].apn_pwd, "");
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].mobile_network, "JIO");
+}
+
+
+
+void write_param_sector(void){
+
+	Prepare_Sector(PARAM_SECTOR, PARAM_SECTOR);
+	vTaskDelay(2 / portTICK_RATE_MS);
+	__disable_irq();
+	Erase_Sector(PARAM_SECTOR, PARAM_SECTOR);
+	vTaskDelay(2 / portTICK_RATE_MS);
+	__enable_irq();
+
+	vTaskDelay(200 / portTICK_RATE_MS);
+
+	Prepare_Sector(PARAM_SECTOR, PARAM_SECTOR);
+	vTaskDelay(20 / portTICK_RATE_MS);
+
+	Write_Sector((unsigned int)PARAM_START_ADDR, (unsigned int) &Global_Data_Params, 4096);
+
+	vTaskDelay(2 / portTICK_RATE_MS);
+}
+
+
+void read_param_sector(void){
+	Global_Data_Params_From_Flash = (Global_Data_Params_def*)PARAM_START_ADDR;
+
+	strcpy(Global_Data_Params.gc_station_name, Global_Data_Params_From_Flash->gc_station_name);
+	strcpy(Global_Data_Params.gc_station_id, Global_Data_Params_From_Flash->gc_station_id);
+
+	strcpy(Global_Data_Params.gc_network_name, Global_Data_Params_From_Flash->gc_network_name);
+	strcpy(Global_Data_Params.gc_station_type, Global_Data_Params_From_Flash->gc_station_type);
+
+	strcpy(Global_Data_Params.gc_master_gsm, Global_Data_Params_From_Flash->gc_master_gsm);
+	strcpy(Global_Data_Params.gc_universal_gsm, Global_Data_Params_From_Flash->gc_universal_gsm);
+	strcpy(Global_Data_Params.gc_secondary_gsm, Global_Data_Params_From_Flash->gc_secondary_gsm);
+	strcpy(Global_Data_Params.gc_secondary_gsm1, Global_Data_Params_From_Flash->gc_secondary_gsm1);
+
+	strcpy(Global_Data_Params.gc_version, Global_Data_Params_From_Flash->gc_version);
+
+	strcpy(Global_Data_Params.gc_http_server_name1, Global_Data_Params_From_Flash->gc_http_server_name1);
+	strcpy(Global_Data_Params.gc_http_link1,Global_Data_Params_From_Flash->gc_http_link1);
+	strcpy(Global_Data_Params.gc_http_key1, Global_Data_Params_From_Flash->gc_http_key1);
+	Global_Data_Params.gi_http_server_port1 = Global_Data_Params_From_Flash->gi_http_server_port1;
+
+	strcpy(Global_Data_Params.gc_http_server_name2, Global_Data_Params_From_Flash->gc_http_server_name2);
+	strcpy(Global_Data_Params.gc_http_link2, Global_Data_Params_From_Flash->gc_http_link2);
+	strcpy(Global_Data_Params.gc_http_key2, Global_Data_Params_From_Flash->gc_http_key2);
+	Global_Data_Params.gi_http_server_port2 = Global_Data_Params_From_Flash->gi_http_server_port2;
+
+	strcpy(Global_Data_Params.gc_ftp_server_name1, Global_Data_Params_From_Flash->gc_ftp_server_name1);
+	strcpy(Global_Data_Params.gc_ftp_user1, Global_Data_Params_From_Flash->gc_ftp_user1);
+	strcpy(Global_Data_Params.gc_ftp_pwd1, Global_Data_Params_From_Flash->gc_ftp_pwd1);
+	strcpy(Global_Data_Params.gc_ftp_path1, Global_Data_Params_From_Flash->gc_ftp_path1);
+	Global_Data_Params.gi_ftpserver_port1 = Global_Data_Params_From_Flash->gi_ftpserver_port1;
+
+	strcpy(Global_Data_Params.gc_ftp_server_name2, Global_Data_Params_From_Flash->gc_ftp_server_name2);
+	strcpy(Global_Data_Params.gc_ftp_user2, Global_Data_Params_From_Flash->gc_ftp_user2);
+	strcpy(Global_Data_Params.gc_ftp_pwd2, Global_Data_Params_From_Flash->gc_ftp_pwd2);
+	strcpy(Global_Data_Params.gc_ftp_path2, Global_Data_Params_From_Flash->gc_ftp_path2);
+	Global_Data_Params.gi_ftpserver_port2 = Global_Data_Params_From_Flash->gi_ftpserver_port2;
+
+
+	Global_Data_Params.gi_log_interval = Global_Data_Params_From_Flash->gi_log_interval;
+	Global_Data_Params.gi_report_interval = Global_Data_Params_From_Flash->gi_report_interval;
+	Global_Data_Params.gi_sim_select = Global_Data_Params_From_Flash->gi_sim_select;
+	Global_Data_Params.gi_send_data_sms = Global_Data_Params_From_Flash->gi_send_data_sms;
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].svc, Global_Data_Params_From_Flash->ISP_APN_PARAMS[0].svc);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].apn, Global_Data_Params_From_Flash->ISP_APN_PARAMS[0].apn);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].apn_user, Global_Data_Params_From_Flash->ISP_APN_PARAMS[0].apn_user);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].apn_pwd, Global_Data_Params_From_Flash->ISP_APN_PARAMS[0].apn_pwd);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[0].mobile_network, Global_Data_Params_From_Flash->ISP_APN_PARAMS[0].mobile_network);
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].svc, Global_Data_Params_From_Flash->ISP_APN_PARAMS[1].svc);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].apn, Global_Data_Params_From_Flash->ISP_APN_PARAMS[1].apn);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].apn_user, Global_Data_Params_From_Flash->ISP_APN_PARAMS[1].apn_user);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].apn_pwd, Global_Data_Params_From_Flash->ISP_APN_PARAMS[1].apn_pwd);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[1].mobile_network, Global_Data_Params_From_Flash->ISP_APN_PARAMS[1].mobile_network);
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].svc, Global_Data_Params_From_Flash->ISP_APN_PARAMS[2].svc);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].apn, Global_Data_Params_From_Flash->ISP_APN_PARAMS[2].apn);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].apn_user, Global_Data_Params_From_Flash->ISP_APN_PARAMS[2].apn_user);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].apn_pwd, Global_Data_Params_From_Flash->ISP_APN_PARAMS[2].apn_pwd);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[2].mobile_network, Global_Data_Params_From_Flash->ISP_APN_PARAMS[2].mobile_network);
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].svc, Global_Data_Params_From_Flash->ISP_APN_PARAMS[3].svc);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].apn, Global_Data_Params_From_Flash->ISP_APN_PARAMS[3].apn);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].apn_user, Global_Data_Params_From_Flash->ISP_APN_PARAMS[3].apn_user);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].apn_pwd, Global_Data_Params_From_Flash->ISP_APN_PARAMS[3].apn_pwd);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[3].mobile_network, Global_Data_Params_From_Flash->ISP_APN_PARAMS[3].mobile_network);
+
+
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].svc, Global_Data_Params_From_Flash->ISP_APN_PARAMS[4].svc);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].apn, Global_Data_Params_From_Flash->ISP_APN_PARAMS[4].apn);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].apn_user, Global_Data_Params_From_Flash->ISP_APN_PARAMS[4].apn_user);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].apn_pwd, Global_Data_Params_From_Flash->ISP_APN_PARAMS[4].apn_pwd);
+	strcpy(Global_Data_Params.ISP_APN_PARAMS[4].mobile_network, Global_Data_Params_From_Flash->ISP_APN_PARAMS[4].mobile_network);
+
+	vTaskDelay(2 / portTICK_RATE_MS);
+
+}
+
+
+
+void cumulative_rf_new(int dd, int mm, int yy, int hh, int min) {
+	int first_sample;
+	int max_sample;
+	int i,sect_no, found;
+	int cur_sample;
+
+	c_rainfall = 0;
+
+	//	max_sample = (24 * 60) / LOG_INTERVAL;	//96
+	cur_sample = ((hh * 60) + min) / LOG_INTERVAL;
+
+	cur_sample = (cur_sample + 61) % 96 ;
+
+	for(sect_no=2, found=0; ((sect_no<4) && !found);){
+		if((days_sector[sect_no-2]->date == dd) && (days_sector[sect_no-2]->month == mm) && (days_sector[sect_no-2]->year == yy))
+			found =1;
+		else
+			sect_no++;
+	}
+
+
+	if(found){
+		for (i = 0; i <= cur_sample; i++) {
+			if(days_sector[sect_no-2]->samples[i].rf != 0xFFFF){
+				c_rainfall += days_sector[sect_no-2]->samples[i].rf;
+			}
+		}
+	}
+}
+
+
+
+
+/*
+void test_memory_write()
+{
+	int temp_date,temp_month,temp_year, i, j;
+
+	temp_date = 16;
+	temp_month = 10;
+	temp_year =2020;
+
+	Samples_def test_rec;
+
+	for(j=16; j<28; j++){
+		for(i=0; i<96; i++){
+			test_rec.rf = (uint16_t) i;
+			test_rec.hour = (uint8_t) i/4;
+			test_rec.minute = (uint8_t)(i%4)*15;
+
+		//	c_hour = i/4;
+		//	c_minute = (i%4)*15;
+
+			test_rec.battery1 = (uint16_t)1000+i;
+			test_rec.battery2 = (uint16_t)2000+i;
+			test_rec.disk_status = (uint8_t)i;
+			test_rec.ftp_status =(uint8_t) i;
+			test_rec.http_status = (uint8_t)i;
+			test_rec.signal = (int16_t)i;
+			test_rec.sms_status = (uint8_t)i;
+			write_days_data(&test_rec, j,temp_month,temp_year);
+			vTaskDelay(10 / portTICK_RATE_MS);
+
+		}
+		if(j==24)
+			j += 1;
+		vTaskDelay(10 / portTICK_RATE_MS);
+	}
+}
+ */
+
+
+void check_data_is_stored_in_flash(){
+
+	int sect, found, recNo;
+
+	for(sect=2, found=0; ((sect<4) && !found);){
+		if((days_sector[sect-2]->year == rf_close_year) &&
+				(days_sector[sect-2]->month == rf_close_month) &&
+				(days_sector[sect-2]->date == rf_close_date)){
+
+			found =1;
+
+			if(days_sector[sect-2]->samples[sampleNo].rf != 0xFFFF)
+				data_not_stored_in_flash = 0;
+			else
+				data_not_stored_in_flash = 1;
+
+		}
+		else
+			sect++;
+
+	}
+
+	if(!found){
+		data_not_stored_in_flash = 1;
+	}
+
+}
+
+void store_data_in_disk(void){
+
+	float s_temp, s_humid, s_ws;
+	int s_wd;
+
+
+//	cumulative_rf(xLast_Rec_15min_Date_Time.date, xLast_Rec_15min_Date_Time.month, xLast_Rec_15min_Date_Time.year, xLast_Rec_15min_Date_Time.hour, xLast_Rec_15min_Date_Time.minute);
+//	vTaskDelay(100 / portTICK_RATE_MS);
+
+	bat_volt1 = ((((float)(days_sector[present_sector_no-2]->samples[present_sample_no].battery1) * 3.3/4095)/0.138));
+	bat_volt2 = ((((float)(days_sector[present_sector_no-2]->samples[present_sample_no].battery2) * 3.3/4095)/0.138));
+
+	s_temp = ((float)days_sector[present_sector_no-2]->samples[present_sample_no].temperature/65536) * 165 - 40;
+
+	s_humid = ((float)days_sector[present_sector_no-2]->samples[present_sample_no].humidity/65534) * 100;
+
+	s_wd = ((int)(days_sector[present_sector_no-2]->samples[present_sample_no].wind_direction * 0.088)) % 360;		// 360/4095 = 0.088
+
+	s_ws = ((float)(days_sector[present_sector_no-2]->samples[present_sample_no].wind_speed / 4)) / days_sector[present_sector_no-2]->samples[present_sample_no].ws_sec_cnt;
+
+//	sprintf(record, "stn_no=%s,rec_time=%04d-%02d-%02d,%02d:%02d:00,temp=%.1f,humi=%.1f,ws=%.1f,wd=%d,signal=%04d,bat_vol=%.2f\r\n",
+	sprintf(gc_sdc_data, "stn_no=%s,rec_time=%04d-%02d-%02d,%02d:%02d,temp=%.1f,humi=%.1f,ws=%.1f,wd=%d,signal=%d,bat_vol=%02d.%02d\r\n",
+			Global_Data_Params.gc_station_id,
+			days_sector[present_sector_no-2]->year,
+			days_sector[present_sector_no-2]->month,
+			days_sector[present_sector_no-2]->date,
+			days_sector[present_sector_no-2]->samples[present_sample_no].hour,
+			days_sector[present_sector_no-2]->samples[present_sample_no].minute,
+			//(xPresent_Date_Time.minute/Global_Data_Params.gi_log_interval)*Global_Data_Params.gi_log_interval,
+			s_temp,
+			s_humid,
+			s_ws,
+			s_wd,
+			days_sector[present_sector_no-2]->samples[present_sample_no].signal,
+			((int)bat_volt1 * 100)/100, (int)(bat_volt1 * 100) % 100);
+
+	//Storing log interval data in SD Card
+	XITC_Memory_Disk.date = xPresent_Date_Time.date;
+	XITC_Memory_Disk.month = xPresent_Date_Time.month;
+	XITC_Memory_Disk.year = xPresent_Date_Time.year;
+	strcpy(XITC_Memory_Disk.record, gc_sdc_data);
+
+	XITC_Memory_Disk.command = eLog;
+	XITC_Memory_Disk.signal = 1;
+	while(XITC_Memory_Disk.signal)
+		vTaskDelay(100 / portTICK_RATE_MS);
+
+	store_in_disk = 1;
+}
+
+
+void write_days_flag_data(){
+	int i,j;
+
+	write_buf_ptr = (int *)local_write_buf_st;
+	sector_data_ptr = (int *)days_sector[present_sector_no-2];
+
+	dest_addr = (unsigned int)days_sector[present_sector_no-2];
+	for(i=0; i<1024; i++)
+		*write_buf_ptr++ = *sector_data_ptr++;
+
+	//now set the start address of the days_sector
+	days_storage_ptr =  (Days_Data_def *)local_write_buf_st;
+
+	if(update_present_day_flag == 1){
+		if(http_status == 1){
+			days_storage_ptr->samples[present_sample_no].signal = gi_signal_level;
+			days_storage_ptr->samples[present_sample_no].http_status = 1;
+		}
+	}
+
+	if(ftp_status == 1){
+		for(i = 0; i< ftp_line_cnt; i++){
+			days_storage_ptr->samples[ftp_flag[i]].ftp_status = 1;
+		}
+	}
+
+
+	erase_status = 1;
+	write_status = 1;
+
+	// prepare for erase
+	Prepare_Sector(present_sector_no, present_sector_no);
+	vTaskDelay(2 / portTICK_RATE_MS);
+	__disable_irq();
+	erase_status = Erase_Sector(present_sector_no, present_sector_no);
+	__enable_irq();
+
+	if(erase_status != 0){
+		Prepare_Sector(present_sector_no, present_sector_no);
+		vTaskDelay(2 / portTICK_RATE_MS);
+		__disable_irq();
+		erase_status = Erase_Sector(present_sector_no, present_sector_no);
+		__enable_irq();
+	}
+
+	vTaskDelay(2 / portTICK_RATE_MS);
+
+
+	// prpare for write
+	Prepare_Sector(present_sector_no, present_sector_no);
+	vTaskDelay(2 / portTICK_RATE_MS);
+
+	// write all 4 K
+	__disable_irq();
+	write_status = Write_Sector(dest_addr, (unsigned int) local_write_buf_st, 4096);
+	__enable_irq();
+
+	if(write_status != 0){
+		//write_status = Write_Sector(dest_addr, (unsigned int) local_write_buf_st, 4096);
+		// prepare for erase
+		Prepare_Sector(present_sector_no, present_sector_no);
+		vTaskDelay(2 / portTICK_RATE_MS);
+		__disable_irq();
+		erase_status = Erase_Sector(present_sector_no, present_sector_no);
+		__enable_irq();
+
+		if(erase_status == 0){
+			// prpare for write
+			Prepare_Sector(present_sector_no, present_sector_no);
+			vTaskDelay(2 / portTICK_RATE_MS);
+
+			// write all 4 K
+			__disable_irq();
+			write_status = Write_Sector(dest_addr, (unsigned int) local_write_buf_st, 4096);
+			__enable_irq();
+		}
+
+	}
+	vTaskDelay(2 / portTICK_RATE_MS);
+
+}
+
+
+void check_and_fill_data_in_flash(){
+
+	int i,j,fill_data;
+	int temp_hr, temp_min;
+
+	int t_dd, t_mm, t_yy;
+
+	fill_data = 0;
+	write_buf_ptr = (int *)local_write_buf_st;
+	sector_data_ptr = (int *)days_sector[present_sector_no-2];
+
+	dest_addr = (unsigned int)days_sector[present_sector_no-2];
+
+	t_dd = days_storage_ptr->date;
+	t_mm = days_storage_ptr->month;
+	t_yy = days_storage_ptr->year;
+
+	for(i=0; i<1024; i++)
+		*write_buf_ptr++ = *sector_data_ptr++;
+
+	for(i=0; i<=present_sample_no; i++){
+		if(days_storage_ptr->samples[i].rf == 0xFFFF){
+			fill_data = 1;
+
+			int temp_hr, temp_min;
+
+			t_dd = days_storage_ptr->date;
+			t_mm = days_storage_ptr->month;
+			t_yy = days_storage_ptr->year;
+
+			if(i < 61){
+				Previous_Date(&t_dd, &t_mm, &t_yy);
+			}
+
+			//=MOD(INT((E1+35)/4), 24)
+			//=MOD(INT(E1+35), 4)*15
+			temp_hr = ((i+35)/4 % 24);
+			temp_min = ((i+35)%4) * 15;
+
+			days_storage_ptr->samples[i].hour = (uint8_t) temp_hr;
+			days_storage_ptr->samples[i].minute = (uint8_t)temp_min;
+			days_storage_ptr->samples[i].year = (uint16_t)t_yy;
+			days_storage_ptr->samples[i].month = (uint8_t)t_mm;
+			days_storage_ptr->samples[i].date = (uint8_t)t_dd;
+			days_storage_ptr->samples[i].battery1 = 0;
+			days_storage_ptr->samples[i].battery2 = 0;
+			days_storage_ptr->samples[i].rf = 0;
+			days_storage_ptr->samples[i].signal = -81;
+			days_storage_ptr->samples[i].http_status = 0;
+			days_storage_ptr->samples[i].ftp_status = 0;
+		}
+	}
+
+	erase_status = 1;
+	write_status = 1;
+
+	if(fill_data == 1){
+		// prepare for erase
+		Prepare_Sector(present_sector_no, present_sector_no);
+		vTaskDelay(2 / portTICK_RATE_MS);
+		__disable_irq();
+		erase_status = Erase_Sector(present_sector_no, present_sector_no);
+		vTaskDelay(2 / portTICK_RATE_MS);
+		__enable_irq();
+
+		if(erase_status != 0){
+			// prepare for erase
+			Prepare_Sector(present_sector_no, present_sector_no);
+			vTaskDelay(2 / portTICK_RATE_MS);
+			__disable_irq();
+			erase_status = Erase_Sector(present_sector_no, present_sector_no);
+			vTaskDelay(2 / portTICK_RATE_MS);
+			__enable_irq();
+
+		}
+
+		// prpare for write
+		Prepare_Sector(present_sector_no, present_sector_no);
+		vTaskDelay(2 / portTICK_RATE_MS);
+
+		// write all 4 K
+		__disable_irq();
+		write_status = Write_Sector(dest_addr, (unsigned int) local_write_buf_st, 4096);
+		__enable_irq();
+
+		if(write_status != 0){
+			// prepare for erase
+			Prepare_Sector(present_sector_no, present_sector_no);
+			vTaskDelay(2 / portTICK_RATE_MS);
+			__disable_irq();
+			erase_status = Erase_Sector(present_sector_no, present_sector_no);
+			vTaskDelay(2 / portTICK_RATE_MS);
+			__enable_irq();
+
+			if(erase_status == 0){
+				// prpare for write
+				Prepare_Sector(present_sector_no, present_sector_no);
+				vTaskDelay(2 / portTICK_RATE_MS);
+
+				// write all 4 K
+				__disable_irq();
+				write_status = Write_Sector(dest_addr, (unsigned int) local_write_buf_st, 4096);
+				__enable_irq();
+
+			}
+		}
+
+		vTaskDelay(2 / portTICK_RATE_MS);
+	}
+}
+
+
+int day_of_week(int dd, int mm, int yy)
+{
+	static int t[] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+	yy -= mm < 3;
+
+	//   yy -= (mm < 3) ? 1 : 0;
+	return ( yy + yy/4 - yy/100 + yy/400 + t[mm-1] + dd) % 7;
+}
+
+
+void vMemory_Task(void *pvParameters)
+{
+	int m,i;
+
+	int get_ui_rf;
+
+	char new_version[16];
+
+	char *matching_ptr;
+	gi_save_params_in_flash = 0;
+	data_not_stored_in_flash = 0;
+	c_rainfall = 0;
+	get_ui_rf = 1;
+	send_msg_data = 0;
+	gi_data_ready_for_report = 0;
+	update_present_day_flag = 0;
+	check_prev_day_ftp = 0;
+	update_previous_day_flag = 0;
+	wait_for_sms_process = 0;
+
+	//	m = day_of_week(29, 2, 2096);
+
+	/*	int temp1, j;
+	for(i=1,j=2; i<30; i++){
+		temp1 = day_of_week(i, j, 2020);
+		printf("%d\r\n", temp1);
+
+	}
+	 */
+
+	vTaskDelay(100 / portTICK_RATE_MS);
+
+	sim_select = 0;
+	sleep_mode = 0;
+	fill_data_in_flash = 0;
+	erase_data_sector = 0;
+	firmware_updated = 0;
+
+	params_default();
+	vTaskDelay(500 / portTICK_RATE_MS);
+
+//	init_entire_space();
+	vTaskDelay(100 / portTICK_RATE_MS);
+
+	strcpy(new_version, "TWS5-1.0.0");
+
+	Global_Data_Params_From_Flash = (Global_Data_Params_def*)PARAM_START_ADDR;
+
+	vTaskDelay(500 / portTICK_RATE_MS);
+
+	//if ((matching_ptr = look_for_str(Global_Data_Params_From_Flash->gc_universal_gsm, "+919980945474")) == 0)
+	if ((matching_ptr = look_for_str(Global_Data_Params_From_Flash->gc_model, "SPATIKA")) == 0)
+		write_param_sector();
+
+
+	read_param_sector();
+
+	if ((matching_ptr = look_for_str(Global_Data_Params_From_Flash->gc_version, new_version)) == 0){
+
+		firmware_updated = 1;
+		strcpy(Global_Data_Params.gc_version, new_version);
+		strcpy(Global_Data_Params.gc_master_gsm, "+919449020611");
+		strcpy(Global_Data_Params.gc_secondary_gsm, "+919591452670");
+		strcpy(Global_Data_Params.gc_secondary_gsm1, "+919164592005");
+
+		Global_Data_Params.gi_send_data_sms = 0;
+		write_param_sector();
+
+	}
+
+	///	read_param_sector();
+	vTaskDelay(500 / portTICK_RATE_MS);
+
+	strcpy(gc_station_id1, Global_Data_Params.gc_station_id);
+	strcpy(gc_version_sdc, Global_Data_Params.gc_version);
+
+	memory_task_started = 1;
+
+	//	Global_Data_Params.gi_send_data_sms = 1;
+	//	write_param_sector();
+
+	vTaskDelay(8000 / portTICK_RATE_MS);
+
+	//	find_old_recent_sector();
+
+	if(gi_disk_ok == 1){
+		XITC_Memory_Disk.command = eGet_Params;
+		XITC_Memory_Disk.signal = 1;
+		while(XITC_Memory_Disk.signal)
+			vTaskDelay(100 / portTICK_RATE_MS);
+
+		if(XITC_Memory_Disk.result == eNo_File){
+
+			// create the params file
+			XITC_Memory_Disk.command = eCreate_Params;
+			XITC_Memory_Disk.signal = 1;
+			while(XITC_Memory_Disk.signal)
+				vTaskDelay(100 / portTICK_RATE_MS);
+		}
+	}
+
+	for(;;){
+
+		taskENTER_CRITICAL();
+		gi_wdt_task_ok_stat |= WDT_MEMORY_OK;
+		taskEXIT_CRITICAL();
+		vTaskDelay(1000 / portTICK_RATE_MS);
+
+		vTaskDelay(500 / portTICK_RATE_MS);
+
+		if(erase_data_sector == 1){
+			init_entire_space();
+			vTaskDelay(10 / portTICK_RATE_MS);
+			erase_data_sector = 0;
+
+			data_sectors_not_allocated = 1;
+
+		}
+
+		if(gi_recv_pkt_ready == 1){
+
+
+			check_data_is_stored_in_flash();
+			vTaskDelay(100 / portTICK_RATE_MS);
+
+			//store current data in flash
+			if(data_not_stored_in_flash == 1){
+
+				//find_latest_date_from_data_sectors();
+				vTaskDelay(10 / portTICK_RATE_MS);
+
+				store_rec.rf = (uint16_t) last_rec_15min_rf;
+				store_rec.battery1 = (uint16_t)last_rec_15min_bat1;
+				store_rec.battery2 =(uint16_t)  last_rec_15min_bat2;
+				store_rec.hour = (uint8_t) xLast_Rec_15min_Date_Time.hour;
+				store_rec.minute = (uint8_t) xLast_Rec_15min_Date_Time.minute;
+				store_rec.signal = -79;
+				store_rec.year = (uint16_t) xLast_Rec_15min_Date_Time.year;
+				store_rec.month = (uint8_t) xLast_Rec_15min_Date_Time.month;
+				store_rec.date = (uint8_t) xLast_Rec_15min_Date_Time.date;
+				store_rec.temperature = (uint16_t) last_rec_temperature;
+				store_rec.humidity = (uint16_t) last_rec_humid;
+				store_rec.wind_direction = (uint16_t) last_rec_wd;
+				store_rec.wind_speed = (uint16_t) last_rec_ws;
+				store_rec.ws_sec_cnt = (uint16_t) last_rec_ws_sec;
+
+
+				//	write_days_data(&store_rec, xLast_Rec_15min_Date_Time.date,xLast_Rec_15min_Date_Time.month,xLast_Rec_15min_Date_Time.year);
+				write_days_data(&store_rec, rf_close_date, rf_close_month, rf_close_year);
+
+				vTaskDelay(100 / portTICK_RATE_MS);
+
+				if(gi_disk_ok == 1){
+					store_data_in_disk();
+					vTaskDelay(100 / portTICK_RATE_MS);
+				}
+
+		/*		if(((present_sample_no % 8) == 0) || (present_sample_no == 95)){
+					check_and_fill_data_in_flash();
+				}*/
+
+
+
+				gi_data_ready_for_report = 1;
+
+
+				/*		if(bat_volt > 12.5)
+					gi_data_ready_for_report = 1;
+
+				else if((bat_volt < 12.4) && ((xPresent_Date_Time.hour % 4) == 0) && (xPresent_Date_Time.minute == 0)){
+					gi_data_ready_for_report = 1;
+				}
+				else
+					sleep_mode = 1;
+				 */
+
+				data_not_stored_in_flash = 0;
+
+			}
+
+			//for user interface cumulative rainfall
+			if((gUi_Active) && (get_ui_rf)){
+				//cumulative_rf_new(xLast_Rec_15min_Date_Time.date, xLast_Rec_15min_Date_Time.month, xLast_Rec_15min_Date_Time.year, xLast_Rec_15min_Date_Time.hour, xLast_Rec_15min_Date_Time.minute);
+				cumulative_rf_new(rf_close_date, rf_close_month, rf_close_year, xLast_Rec_15min_Date_Time.hour, xLast_Rec_15min_Date_Time.minute);
+				//cumulative_rf_new(rf_close_date, rf_close_month, rf_close_year, 8, 30);
+
+				u_rainfall = c_rainfall;
+				vTaskDelay(100 / portTICK_RATE_MS);
+				get_ui_rf = 0;
+			}
+
+			gi_recv_pkt_ready = 0;
+		}
+
+		//Update present day http flag and ftp flag and also fill data gaps
+
+		if(update_present_day_flag == 1){
+
+			write_days_flag_data();
+			vTaskDelay(100 / portTICK_RATE_MS);
+
+			update_present_day_flag = 0;
+
+			if((xLast_Rec_15min_Date_Time.hour == 8) && (xLast_Rec_15min_Date_Time.minute == 30))
+				store_ftp_sdc = 1;
+		//	sleep_mode = 1;
+
+			/*	if((ftp_line_cnt == 0) && (http_status == 1))
+				check_prev_day_ftp = 1;
+			else
+				sleep_mode = 1;*/
+
+		}
+
+		/*	if(update_previous_day_flag == 1){
+			write_days_flag_data();
+			vTaskDelay(100 / portTICK_RATE_MS);
+			update_previous_day_flag = 0;
+			sleep_mode = 1;
+		}*/
+
+
+		if(gi_save_params_in_flash == 1){
+			write_param_sector();
+			vTaskDelay(100 / portTICK_RATE_MS);
+			gi_save_params_in_flash = 0;
+		}
+
+
+
+		if((sleep_mode == 1) && (!wait_for_sms_process))
+			wait_for_sms_process = 1;
+
+
+		if((sleep_mode == 1) && (get_gps == 0) && (wait_for_sms_process == 2))
+			shutdown_pwr = 1;
+
+
+	}
+}
+

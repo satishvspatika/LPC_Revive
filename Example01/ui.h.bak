@@ -1,0 +1,122 @@
+#define WELCOME_STR1 "   Varsha TRG   "
+#define WELCOME_STR2 "  by  Spatika   "
+#define DATETIME_STR "  Date & Time   "
+#define COPY_USB_STR "  Copy To USB ?  "
+
+#define MAX_UI_PARAMS 13
+
+typedef struct {
+	int signal;
+	int command;
+	int result;
+	char data[50];
+} XITC_Ui_Gprs_def;
+
+
+typedef struct{
+	int sig;
+	int lcd_cmd;
+	int lcd_posn;
+	char disp_str[120];
+} XITC_Ui_Lcd_def;
+
+
+typedef struct {
+	int command;		// copy or get command
+	int date;
+	int month;
+	int year;
+	int hour;
+	int minute;
+	int result;
+	char read_buf[150];
+} XITC_Ui_Disk_def;
+
+
+
+struct UI_STEP_DEFN {
+	int ikey;
+	void *ptr2function;
+	unsigned char uclcd_cmd;
+	unsigned char uclcd_addr;
+	char *ptr2_lcd_display_str;
+	int iNext_State;
+	int iNext_Step;
+	int iTc;
+};
+
+enum Ui_Disk_Cmd {
+	eITC_Ui_Disk_Nop,
+	eITC_Ui_Disk_Get,
+	eITC_Ui_Disk_Copy,
+	eITC_Ui_Load_Params,
+	eITC_Ui_Disk_Save_Params,
+	eITC_Ui_Copy_Firmware,
+	eITC_Ui_Copy_Firmware1
+
+};
+
+enum Ui_Gprs_Cmd_Stats{
+	eUi_Gprs_Get_Sglvl,
+	eUi_Gprs_Sglvl_Done,
+	eUi_Gprs_Get_CPIN,
+	eUi_Gprs_CPIN_Done,
+	eUi_Gprs_Cmd_In_Progress,
+	eUi_Gprs_Cmd_Fail,
+	eUi_Gprs_Send_Status,
+	eUi_Gprs_Send_Status1,
+	eUI_Gps_Info,
+	eUI_Gps_Info_A,
+	eUI_Gps_Info_NA,
+	eUi_Gprs_Send_Status_Done,
+	eUi_Gprs_Get_CREG
+};
+
+enum UI_STATE{
+	eUi_Idle,
+	eUi_Welcome,
+	eUi_Date_Time,
+	eUi_SetDate,
+	eUi_Params,
+	eUi_History,
+	eUi_Hi_Set_Date,
+	eUi_USB_Copy,
+	eUi_USB_SetDate,
+	eUi_Show_Params,
+	//eUi_Sim_Details,
+	//eUi_Net_Status,
+	//eUi_Err_Details,
+	//eUi_Calibration_Report,
+	eUi_Send_SMS,
+	eUi_Load_Params,
+	eUi_Copy_Firmware,
+	eUi_Stn_ID,
+	eUi_Set_Stn_ID,
+	eUi_Get_GPS,
+	eUi_Calibrate,
+	UI_RET
+};
+enum {
+	eLcd_Normal, eLcd_Shifting, eLcd_Frozen
+};
+enum Calib_States { eCalib_Idle, eCalib_Rain, eCalib_Temp_Hum,
+	eCalib_Wind_Speed, eCalib_Wind_Dir, eCalib_Qei,
+	eCalib_Depth, eCalib_Done
+};
+enum UI_F968UART{eReset_Rf_Ui, eAdd_Rf_Calib, eBat_Charge, eBat_Cutoff};
+XITC_Ui_Gprs_def XITC_Ui_Gprs;
+
+
+XITC_Ui_Disk_def XITC_Ui_Disk;
+
+XITC_Ui_Lcd_def XITC_Ui_Lcd;
+
+char ui_lcd_disp_buf[50], ui_lcd_disp_buf2[32];
+
+
+
+void vUi_Task(void *pvParameters);
+void Next_Date(int *Nd, int *Nm, int *Ny);
+void Previous_Date(int *Cd, int *Cm, int *Cy);
+
+

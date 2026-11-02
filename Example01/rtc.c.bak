@@ -1,0 +1,372 @@
+#include "spi_sd_lpc17xx.h"
+#include "FreeRTOS.h"
+#include "globals.h"
+#include "rtc.h"
+#include "ui.h"
+#include "task.h"
+#include "gprs.h"
+#include "log.h"
+void Init_Rtc(void);
+void Get_Time(xDateTime_def *xDateTime);
+void Set_Time( xDateTime_def *xNewDateTime);
+void Get_RegData(void);
+void Set_RegData(void);
+
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Init_Rtc
+ * 	DESCRIPTION : This function is used for initializing RTC PIns
+ * 			•	Enable Bit for PCONP Register
+			•	CCR - Clock Control Register: For CCR, disable Timer counters and calibration mode. Keep RTC in Reset mode
+			•	AMR:-Alarm Mask Register: For AMR, All Alarm based interrupts are disabled.
+			•	ILR- Interrupt Location Register: For ILR, Clear all pending interrupts.
+			•	CIIR- Counter Increment Interrupt Register: For CIIR, Disable all incrementing Interrupts.
+			•	After all the Register Initialization, Enable Timer counter and Remove reset condition for CCR Register
+ *
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : None
+*	CALLED FUNCTION : vRtc_Task
+*	CALLING FUNCTION : Get_Time
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void Init_Rtc(void) {
+	short int i;
+#ifdef RTC_IN_LPC
+	LPC_SC->PCONP |= 0X00000200; // Bit for RTC enabling in PCONP is set
+	LPC_RTC->CCR = 0X00000012;	 // Disable Time_counters, Keep in Rest mode, Disable Calibration mode
+	LPC_RTC->AMR = 0X000000FF;	 // all alarm based interrupts are disabled
+								 // i.e. to check on every 1 minute
+	LPC_RTC->ILR = 3;			// clear all pending interrupt
+
+	LPC_RTC->CIIR = 0X00000000;	 // All incrementing interrupts are disabled
+
+	LPC_RTC->CCR = 0X00000011;	// enable Time_counters and remove from reset condition
+	for(i=0;i<500;i++);
+
+	Get_Time(&xPresent_Date_Time);			// to init the globals
+#endif
+
+#ifdef IDT_RTC
+	XITC_RTC_I2C.clock_val[0]= 0;		// start address is 0
+	XITC_RTC_I2C.clock_val[1]= 0;		// always set the seconds to zero
+
+	XITC_RTC_I2C.command = Init_RTC;
+	XITC_RTC_I2C.signal = 1;
+
+	while(XITC_RTC_I2C.signal)
+		vTaskDelay(10 / portTICK_RATE_MS);
+	vTaskDelay(100 / portTICK_RATE_MS);
+	Get_Time(&xPresent_Date_Time);			// to init the globals
+#endif
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Get_Time
+ * 	DESCRIPTION : This function is used to get the Present date time
+* 	VERSION : 1.5
+* 	ARGUMENTS : xDateTime
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : None
+*	CALLED FUNCTION : vRtc_Task
+*	CALLING FUNCTION : None
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void Get_Time(xDateTime_def *xDateTime)
+{
+#ifdef RTC_IN_LPC
+	xDateTime->year		= LPC_RTC->YEAR;
+	xDateTime->month	= LPC_RTC->MONTH;
+	xDateTime->date		= LPC_RTC->DOM;
+	xDateTime->hour		= LPC_RTC->HOUR;
+	xDateTime->minute	= LPC_RTC->MIN;
+	xDateTime->second	= LPC_RTC->SEC;
+#endif
+
+#ifdef IDT_RTC
+	int i;
+	XITC_RTC_I2C.command = Get_Time_Cmd;
+	for (i=1; i<9; i++)
+		XITC_RTC_I2C.clock_val[i] = 0;
+	XITC_RTC_I2C.signal = 1;
+	while(XITC_RTC_I2C.signal)
+		vTaskDelay(10 / portTICK_RATE_MS);
+	xDateTime->year		= (XITC_RTC_I2C.clock_val[7]/16)*10+(XITC_RTC_I2C.clock_val[7]%16)+2000;
+	xDateTime->month	= (XITC_RTC_I2C.clock_val[6]/16)*10+(XITC_RTC_I2C.clock_val[6]%16);
+	xDateTime->date		= (XITC_RTC_I2C.clock_val[5]/16)*10+(XITC_RTC_I2C.clock_val[5]%16);
+
+	XITC_RTC_I2C.clock_val[3]	&= 0x3F;	// remove unwanted bits
+	xDateTime->hour		= (XITC_RTC_I2C.clock_val[3]/16)*10+(XITC_RTC_I2C.clock_val[3]%16);
+
+	xDateTime->minute	= (XITC_RTC_I2C.clock_val[2]/16)*10+(XITC_RTC_I2C.clock_val[2]%16);
+
+	XITC_RTC_I2C.clock_val[1]	&= 0x7F;	// remove unwanted bits
+	xDateTime->second	= (XITC_RTC_I2C.clock_val[1]/16)*10+(XITC_RTC_I2C.clock_val[1]%16);
+#endif
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Set_Time
+ * 	DESCRIPTION : This function is used to Set the New date time
+* 	VERSION : 1.5
+* 	ARGUMENTS : xNewDateTime
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : None
+*	CALLED FUNCTION : vRtc_Task
+*	CALLING FUNCTION : None
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void Set_Time( xDateTime_def *xNewDateTime)
+{
+#ifdef RTC_IN_LPC
+	LPC_RTC->MIN	= xNewDateTime->minute;
+	LPC_RTC->HOUR	= xNewDateTime->hour;
+	LPC_RTC->DOM	= xNewDateTime->date;
+	LPC_RTC->MONTH	= xNewDateTime->month;
+	LPC_RTC->YEAR	= xNewDateTime->year;
+	LPC_RTC->SEC	= 0;
+#endif
+
+#ifdef IDT_RTC
+	XITC_RTC_I2C.clock_val[0]= 0;		// start address
+	XITC_RTC_I2C.clock_val[1]= 0;		// always set the seconds to zero
+
+	XITC_RTC_I2C.clock_val[2]= ((xNewDateTime->minute)/10)*16+((xNewDateTime->minute)%10);
+	XITC_RTC_I2C.clock_val[3]= ((xNewDateTime->hour)/10)*16+((xNewDateTime->hour)%10);
+	XITC_RTC_I2C.clock_val[4]= 1; // ignore the week day presently;
+	XITC_RTC_I2C.clock_val[5]= ((xNewDateTime->date)/10)*16+((xNewDateTime->date)%10);
+	XITC_RTC_I2C.clock_val[6]= ((xNewDateTime->month)/10)*16+((xNewDateTime->month)%10);
+	xNewDateTime->year -= 2000;
+	XITC_RTC_I2C.clock_val[7]= ((xNewDateTime->year)/10)*16+((xNewDateTime->year)%10);
+	XITC_RTC_I2C.clock_val[8]= 0;	// do not opt for anything
+
+	XITC_RTC_I2C.command = Set_Time_Cmd;
+	XITC_RTC_I2C.signal = 1;
+
+	while(XITC_RTC_I2C.signal)
+		vTaskDelay(10 / portTICK_RATE_MS);
+#endif
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Set_RegData
+ * 	DESCRIPTION : This function is used to Store Station Id, date time, rainfall to RTC registers
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : None
+*	CALLED FUNCTION : vRtc_Task
+*	CALLING FUNCTION : Get_RegData
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void Set_RegData()
+{
+#ifdef RTC_IN_LPC
+	LPC_RTC->GPREG0 = 0x55AA6699;
+	LPC_RTC->GPREG1 = XITC_Log_RTC.stn_id;
+	LPC_RTC->GPREG2 = XITC_Log_RTC.date;
+	LPC_RTC->GPREG3 = XITC_Log_RTC.time;
+	LPC_RTC->GPREG4 = XITC_Log_RTC.rf;
+#endif
+
+#ifdef IDT_RTC
+	XITC_RTC_I2C.clock_val[15] = 16;	// address in IDT
+	XITC_RTC_I2C.clock_val[16] = (XITC_Log_RTC.signature>>24)&0xff;
+	XITC_RTC_I2C.clock_val[17] = (XITC_Log_RTC.signature>>16)&0xff;
+	XITC_RTC_I2C.clock_val[18] = (XITC_Log_RTC.signature>>8)&0xff;
+	XITC_RTC_I2C.clock_val[19] = (XITC_Log_RTC.signature)&0xff;
+
+	XITC_RTC_I2C.clock_val[20] = (XITC_Log_RTC.stn_id>>24)&0xff;
+	XITC_RTC_I2C.clock_val[21] = (XITC_Log_RTC.stn_id>>16)&0xff;
+	XITC_RTC_I2C.clock_val[22] = (XITC_Log_RTC.stn_id>>8)&0xff;
+	XITC_RTC_I2C.clock_val[23] = (XITC_Log_RTC.stn_id)&0xff;
+
+	XITC_RTC_I2C.clock_val[24] = (XITC_Log_RTC.date>>24)&0xff;
+	XITC_RTC_I2C.clock_val[25] = (XITC_Log_RTC.date>>16)&0xff;
+	XITC_RTC_I2C.clock_val[26] = ((XITC_Log_RTC.date>>8)&0xff) ;
+	XITC_RTC_I2C.clock_val[27] = ((XITC_Log_RTC.date)&0xff);
+
+	XITC_RTC_I2C.clock_val[28] = (XITC_Log_RTC.time>>24)&0xff;
+	XITC_RTC_I2C.clock_val[29] = (XITC_Log_RTC.time>>16)&0xff;
+	XITC_RTC_I2C.clock_val[30] = (XITC_Log_RTC.time>>8)&0xff;
+	XITC_RTC_I2C.clock_val[31] = (XITC_Log_RTC.time)&0xff;
+
+	XITC_RTC_I2C.clock_val[32] = (XITC_Log_RTC.rf>>24)&0xff;
+	XITC_RTC_I2C.clock_val[33] = (XITC_Log_RTC.rf>>16)&0xff;
+	XITC_RTC_I2C.clock_val[34] = (XITC_Log_RTC.rf>>8)&0xff;
+	XITC_RTC_I2C.clock_val[35] = (XITC_Log_RTC.rf)&0xff;
+
+
+	XITC_RTC_I2C.command = Set_Reg;
+	XITC_RTC_I2C.signal = 1;
+	while(XITC_RTC_I2C.signal)
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+
+#endif
+	Get_RegData();
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Get_RegData
+ * 	DESCRIPTION : This function is used to Get Station Id, date time, rainfall From RTC registers
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : XITC_Log_RTC.signature, XITC_Log_RTC.stn_id, XITC_Log_RTC.date, XITC_Log_RTC.time,XITC_Log_RTC.rf
+*	CALLED FUNCTION : vRtc_Task
+*	CALLING FUNCTION : None
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void Get_RegData(){
+
+#ifdef RTC_IN_LPC
+	XITC_Log_RTC.signature = LPC_RTC->GPREG0;
+	XITC_Log_RTC.stn_id = LPC_RTC->GPREG1;
+	XITC_Log_RTC.date = LPC_RTC->GPREG2;
+	XITC_Log_RTC.time = LPC_RTC->GPREG3;
+	XITC_Log_RTC.rf = LPC_RTC->GPREG4;
+#endif
+
+#ifdef IDT_RTC
+	XITC_RTC_I2C.clock_val[15] = 16;
+	XITC_RTC_I2C.command = Get_Reg;
+	XITC_RTC_I2C.signal = 1;
+	while(XITC_RTC_I2C.signal)
+		vTaskDelay(10 / portTICK_RATE_MS);
+	XITC_Log_RTC.signature =	(XITC_RTC_I2C.clock_val[16]<<24)+
+			(XITC_RTC_I2C.clock_val[17]<<16)+ (XITC_RTC_I2C.clock_val[18]<<8)+XITC_RTC_I2C.clock_val[19];
+	XITC_Log_RTC.stn_id =	(XITC_RTC_I2C.clock_val[20]<<24)+
+			(XITC_RTC_I2C.clock_val[21]<<16)+ (XITC_RTC_I2C.clock_val[22]<<8)+XITC_RTC_I2C.clock_val[23];
+	XITC_Log_RTC.date =	(XITC_RTC_I2C.clock_val[24]<<24)+
+			(XITC_RTC_I2C.clock_val[25]<<16)+ (XITC_RTC_I2C.clock_val[26]<<8)+XITC_RTC_I2C.clock_val[27];
+	XITC_Log_RTC.time =	(XITC_RTC_I2C.clock_val[28]<<24)+
+			(XITC_RTC_I2C.clock_val[29]<<16)+ (XITC_RTC_I2C.clock_val[30]<<8)+XITC_RTC_I2C.clock_val[31];
+	XITC_Log_RTC.rf =	(XITC_RTC_I2C.clock_val[32]<<24)+
+			(XITC_RTC_I2C.clock_val[33]<<16)+ (XITC_RTC_I2C.clock_val[34]<<8)+XITC_RTC_I2C.clock_val[35];
+#endif
+
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : vRTC_Task
+ * 	DESCRIPTION : This function is used to Run the Task for ever
+ * 					•	This task is mainly used for monitoring the Real Time Clock
+					•	It also used for monitoring the Report Interval
+					•	Used to Store Station Id, date time, rainfall in RTC registers.
+				1.	Initialize RTC Pins. Following registers should be set while initializing RTC
+					•	Enable Bit for PCONP Register
+					•	CCR - Clock Control Register: For CCR, disable Timer counters and calibration mode. Keep RTC in Reset mode
+					•	AMR:-Alarm Mask Register: For AMR, All Alarm based interrupts are disabled.
+					•	ILR- Interrupt Location Register: For ILR, Clear all pending interrupts.
+					•	CIIR- Counter Increment Interrupt Register: For CIIR, Disable all incrementing Interrupts.
+					•	After all the Register Initialization, Enable Timer counter and Remove reset condition for CCR Register.
+				2.	Call the Device Timer Interrupt Procedure function MMC_disk_timerproc for every 10 ms.
+				3.	Enable the WDT Checking under Critical Region code.
+				4.	Incoming Requests:
+					UI to RTC: This request is used to Set the date time by using Keyboard.
+					GPRS to RTC: This Request is used to Set the date time by using SMS.
+					Log to RTC: This request is used to Store the station Id, date time and rainfall in RTC   register for every 15 minutes. It also used for Get Station Id , date time and Rainfall from RTC Registers.
+				5.	Outgoing Requests:
+					RTC to Log: Every Log interval, this request will be send to Log for Initiating HTTP and FTP.
+
+* 	VERSION : 1.5
+* 	ARGUMENTS : pvParameters
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : rtc_task_started, XITC_RTC_Log.log_intvl_ovf
+*	CALLED FUNCTION : main
+*	CALLING FUNCTION : Init_Rtc, MMC_disk_timerproc, Set_Time, Get_Time, Get_RegData, Set_RegData
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void vRTC_Task( void *pvParameters )
+{
+	int iRTC_10ms_counter;
+	int last_rec_min;
+
+	Init_Rtc();
+	XITC_RTC_I2C.signal = 0;
+	XITC_RTC_Log.log_intvl_ovf = 0;
+	XITC_RTC_Log.report_intvl_ovf = 0;
+	XITC_RTC_Log.rf_closing_time = 0;
+	gprs_sync_flag = 0;
+	gi_sdc_err_rpt = 0;
+	bat_err_rpt = 0;
+
+	rtc_task_started = 1;
+	iRTC_10ms_counter = 1000;				// to time out 1 sec
+	last_rec_min = -1;
+
+	for(;;){
+		vTaskDelay(10 / portTICK_RATE_MS);
+		MMC_disk_timerproc();
+		if(iRTC_10ms_counter) iRTC_10ms_counter--;
+		if(!iRTC_10ms_counter){
+			taskENTER_CRITICAL();
+			gi_wdt_task_ok_stat |= WDT_RTC_OK;
+			taskEXIT_CRITICAL();
+
+			iRTC_10ms_counter = 1000;
+			//all steps to be be done every 1 sec here
+			if(XITC_Ui_Rtc.signal){
+				XITC_Ui_Rtc.signal = 0;
+				Init_Rtc();
+				vTaskDelay(100 / portTICK_RATE_MS);
+				Set_Time(XITC_Ui_Rtc.px_New_Date_Time);
+			}
+			if(XITC_Gprs_Rtc.signal == 1){
+				Set_Time(XITC_Gprs_Rtc.px_New_Date_Time);
+				vTaskDelay(100 / portTICK_RATE_MS);
+				XITC_Gprs_Rtc.signal = 0;
+			}
+			Get_Time(&xPresent_Date_Time);
+			if(last_rec_min != xPresent_Date_Time.minute){
+				if ((xPresent_Date_Time.minute % log_interval) == 0)
+					XITC_RTC_Log.log_intvl_ovf=1;
+
+				if ((xPresent_Date_Time.minute % report_interval) == 0)
+					XITC_RTC_Log.report_intvl_ovf = 1;
+
+				if((xPresent_Date_Time.hour*60+xPresent_Date_Time.minute) == (CLOSING_HR*60+CLOSING_MIN))
+					XITC_RTC_Log.rf_closing_time = 1;
+
+				if((xPresent_Date_Time.hour == 11) && (xPresent_Date_Time.minute == 0))
+					gi_sdc_err_rpt = 1;
+
+				if((xPresent_Date_Time.hour == 6) && (xPresent_Date_Time.minute == 0)){
+					bat_err_rpt = 1;
+				}
+				last_rec_min = xPresent_Date_Time.minute;
+			}
+		}
+		else if(XITC_Log_RTC.signal){
+			if (XITC_Log_RTC.command==RTC_REG_GET_CMD)
+				Get_RegData();
+			else if (XITC_Log_RTC.command==RTC_REG_SET_CMD)
+				Set_RegData();
+			XITC_Log_RTC.signal = 0;
+		}
+
+	}
+}

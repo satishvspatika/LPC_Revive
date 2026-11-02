@@ -1,0 +1,2735 @@
+
+#include "globals.h"
+#include "gprs.h"
+#include "lpc17xx_uart.h"
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_libcfg_default.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "ui.h"
+#include <cr_section_macros.h>
+#include "memory.h"
+
+
+#define MAX_NO_OF_MSGS 25
+//#define RECVBUF_SIZE  16384
+#define RECVBUF_SIZE  12288
+
+char *gprs_recv_ptr;
+char *gprs_xmit_ptr;
+char *matching_ptr;
+char *ptr_RAM2;
+
+int packet_recved;
+//char recv_str[700];
+int char_count;
+
+int gprs_recv_in_cnt, gprs_recv_out_cnt;
+int end_of_text_recd;
+int gprs_timeout_occurred;
+int process_msgs,gprs_status;
+
+char gprs_xmit_buf[300];
+char gprs_response[300];
+char status_response[256];
+char message_recd[MAX_NO_OF_MSGS];
+int response_no;
+
+int gprs_new_date, gprs_new_month, gprs_new_year, gprs_new_hour, gprs_new_minute;
+int gprs_server_date_Ok;
+
+int ftp_mode;
+
+char msg_rcvd_number[16];
+
+
+enum {eMatch_E, eMatch_R1, eMatch_R2, eMatch_O, eMatch_R3};
+
+
+void define_gprs_uart_pins(LPC_UART_TypeDef* gprs_port);
+void init_gprs_uart(LPC_UART_TypeDef* gprs_port);
+
+
+const char SIMXFERRES[]=">";
+
+
+///////////////////////////////////////////////////////////////////
+void power_on_sim_module(void){
+
+	GPIO_ClearValue(PWR_KEY_PORT, PWR_KEY_MASK);
+	vTaskDelay(500 / portTICK_RATE_MS);
+	GPIO_SetValue(PWR_KEY_PORT, PWR_KEY_MASK);
+	vTaskDelay(500 / portTICK_RATE_MS);
+
+}
+///////////////////////////////////////////////////////////////////
+
+
+
+///////////////////////////////////////////////////////////////////
+void define_gprs_uart_pins(LPC_UART_TypeDef* gprs_port)
+{
+
+	PINSEL_CFG_Type gprs_config;
+	// tx and rx pins
+	gprs_config.OpenDrain = 0;
+	gprs_config.Pinmode = 0;
+	gprs_config.Funcnum = 1;
+	gprs_config.Portnum = GPRS_PORT_NO;
+	gprs_config.Pinnum = GPRS_TX_PIN;
+	PINSEL_ConfigPin(&gprs_config);
+	gprs_config.Portnum = GPRS_PORT_NO;
+	gprs_config.Pinnum = GPRS_RX_PIN;
+	PINSEL_ConfigPin(&gprs_config);
+
+	gprs_config.Funcnum = 0;
+	gprs_config.Portnum = PWR_KEY_PORT;
+	gprs_config.Pinnum = PWR_KEY_PIN;
+	gprs_config.Pinmode = PINSEL_PINMODE_PULLUP;
+	PINSEL_ConfigPin(&gprs_config);
+
+	GPIO_SetDir(PWR_KEY_PORT, PWR_KEY_MASK, DIR_OUT);
+	vTaskDelay(100 / portTICK_RATE_MS);
+
+	power_on_sim_module();
+	vTaskDelay(100 / portTICK_RATE_MS);
+
+	gprs_config.Funcnum = 0;
+	gprs_config.Portnum = STATUS_KEY_PORT;
+	gprs_config.Pinnum = STATUS_KEY_PIN;
+	gprs_config.Pinmode = PINSEL_PINMODE_PULLUP;
+	PINSEL_ConfigPin(&gprs_config);
+
+	GPIO_SetDir(STATUS_KEY_PORT, STATUS_KEY_MASK, DIR_OUT);
+	vTaskDelay(100 / portTICK_RATE_MS);
+
+	//	GPIO_ClearValue(STATUS_KEY_PORT, STATUS_KEY_MASK);
+	vTaskDelay(100 / portTICK_RATE_MS);
+
+}
+///////////////////////////////////////////////////////////////////
+
+
+void prepare_and_send_status(char *gsm_no){
+	//SPATIKA,TRG,STATUS-C,000511,2017-11-25T12:15,TRG4-3.0.1-1.1,115,-110,12.56,SDC-FAIL,CLB-FAIL,2017-11-25,99999,2017-11-28T13:00
+	sprintf(status_response,"%s,%s,STATUS-C,%s,%04d-%02d-%02dT%02d:%02d,%s-%c,%d,%04d,%.2f,%s,%s,%04d-%02d-%02d,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+			Global_Data_Params.gc_network_name,
+			Global_Data_Params.gc_station_type,
+			Global_Data_Params.gc_station_id,
+			xPresent_Date_Time.year,
+			xPresent_Date_Time.month,
+			xPresent_Date_Time.date,
+			xPresent_Date_Time.hour,
+			xPresent_Date_Time.minute,
+			Global_Data_Params.gc_version,
+			lpc845_ver,
+			Global_Data_Params.gi_report_interval,
+			gi_signal_level,
+			bat_volt,
+			(gi_disk_ok ? "SDC-OK" : "SDC-FAIL"),
+			(Cailb_Status_Details.status ? "CLB-OK" : "CLB-FAIL"),
+			Cailb_Status_Details.year,
+			Cailb_Status_Details.month,
+			Cailb_Status_Details.date,
+			gi_log_year,
+			gi_log_month,
+			gi_log_date,
+			gi_log_hour,
+			gi_log_minute,
+			gi_present_error
+	);
+	send_message(msg_rcvd_number, status_response);
+}
+///////////////////////////////////////////////////////////////////
+
+
+void save_err_det(void)
+{
+	XITC_Gprs_Disk.command = eSave_Params;
+	XITC_Gprs_Disk.signal = 1;
+	while (XITC_Gprs_Disk.signal)
+		vTaskDelay(100 / portTICK_RATE_MS);
+}
+
+///////////////////////////////////////////////////////////////////
+
+
+void process_msg(int msg_no)
+{
+	int msg_char_count, timeout, msg_recd, response_no;
+	int m_date, m_month, m_year, m_hour, m_minute;
+	char msg_cmd[16], msg_data[256], *matching_ptr;
+	char msg_stat[16];
+	xDateTime_def xDateTime_Gprs_Sms;
+	int itemp1, itemp2, itemp3, itemp4;
+	float ftemp, ftemp1, ftemp2, ftemp3;
+	char ctemp1[30], ctemp2[30], ctemp3[30], ctemp4[30];
+	char msg_response[256];
+	char temp[20],temp1[20];
+	char send_cmd[32];
+	int response_numb, iCount;
+	float mbat_volt1;
+	int msect_no,mfound,mrec_no;
+	mfound = 0;
+
+	response_no	=  Send_And_Check_Gprs("\r\nAT+CMGF=1\r\n", "OK", "ERROR", 5000);
+	vTaskDelay(5 / portTICK_RATE_MS);
+
+	// first let us read
+	sprintf(msg_cmd, "AT+CMGR=%d\r\n", msg_no);
+	gprs_xmit_ptr = msg_cmd;
+	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+	vTaskDelay(5 / portTICK_RATE_MS);	// wait a while for transmission to take place
+	msg_char_count = 0;
+	timeout = 30000/10;
+	msg_recd = 0;
+	msg_data[0] = 0;
+
+	while((!msg_recd) && (timeout)){
+		while( gprs_recv_in_cnt != gprs_recv_out_cnt){
+			//			msg_data[msg_char_count] = gprs_recv_buf[gprs_recv_out_cnt];
+			msg_data[msg_char_count] = *((char *)(0x2007c000 + gprs_recv_out_cnt));
+			msg_data[msg_char_count+1] = 0;
+			gprs_recv_out_cnt = (gprs_recv_out_cnt+1)%(RECVBUF_SIZE); //(sizeof(gprs_recv_buf)
+			msg_char_count++;
+			if(msg_char_count > 248)
+				break;
+		}
+		if(timeout){
+			timeout--;
+			vTaskDelay(10 / portTICK_RATE_MS);
+		}
+		if((matching_ptr = look_for_str(msg_data, "OK")) != 0 )
+			msg_recd = 1;
+		if((matching_ptr = look_for_str(msg_data, "ERROR")) != 0 )
+			msg_recd = -1;
+	}
+
+	if((!timeout) || (msg_recd == -1))
+		return;
+	if(msg_recd == 1){
+		if ( ((matching_ptr = look_for_str(msg_data, "REC READ")) == 0)
+				&& ((matching_ptr = look_for_str(msg_data, "REC UNREAD")) != 0)
+				&& ((matching_ptr = look_for_str(msg_data, "VARSHA")) != 0)
+				&& (((matching_ptr = look_for_str(msg_data, Global_Data_Params.gc_master_gsm)) != 0)
+						|| ((matching_ptr = look_for_str(msg_data, Global_Data_Params.gc_universal_gsm)) != 0)
+						|| ((matching_ptr = look_for_str(msg_data, Global_Data_Params.gc_secondary_gsm)) != 0))){
+
+			sscanf(msg_data, "%[^:]: \"%[^\"]\",\"%[^\"]\"" , &temp, &temp1, &msg_rcvd_number);
+
+			// let us decode the command now....
+			// setting date and time....
+			if( (matching_ptr = look_for_str(msg_data, "SET_DATE")) != 0){
+				sscanf(matching_ptr, "SET_DATE\rDATE=%d-%d-%d\rTIME=%d:%d",
+						&xSet_Date_Time.date,
+						&xSet_Date_Time.month,
+						&xSet_Date_Time.year,
+						&xSet_Date_Time.hour,
+						&xSet_Date_Time.minute);
+				xSet_Date_Time.second = 10;
+				set_time_to_rtc = 1;
+			}
+			// ............setting date and time....ends here
+
+			if( (matching_ptr = look_for_str(msg_data, "DEL_FTP_FILE")) != 0){
+				XITC_Gprs_Disk.command = eDel_Ftp_File;
+				XITC_Gprs_Disk.signal = 1;
+				while(XITC_Gprs_Disk.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+			}
+
+			if( (matching_ptr = look_for_str(msg_data, "DELETE_PARAM_FILE")) != 0){
+				XITC_Gprs_Disk.command = eDel_Param_File;
+				XITC_Gprs_Disk.signal = 1;
+				while(XITC_Gprs_Disk.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+			}
+
+			if ((matching_ptr = look_for_str(msg_data, "MODULE_CMD")) != 0){
+				if((matching_ptr = look_for_str(msg_data, "AT")) != 0){
+					//int date, month, year;
+					sscanf(matching_ptr, "AT%s",&ctemp4);
+
+					sprintf(send_cmd, "AT%s\r\n", ctemp4);
+					gprs_xmit_ptr = send_cmd;
+
+					for(iCount=0; iCount<5; iCount++){
+						response_numb = Send_And_Check_Gprs(gprs_xmit_ptr, "\r\n","ERROR", 5000);
+						vTaskDelay(100 / portTICK_RATE_MS);
+						//	if(response_numb == eAck){
+						if((strlen(gprs_response) > 4) && (response_numb != eNack)){
+							sprintf(status_response, "%s,%s,\"%s\",%s,%04d-%02d-%02dT%02d:%02d,%s\r\n\032",
+									Global_Data_Params.gc_network_name,
+									Global_Data_Params.gc_station_type,
+									send_cmd,
+									Global_Data_Params.gc_station_id,
+									xPresent_Date_Time.year,
+									xPresent_Date_Time.month,
+									xPresent_Date_Time.date,
+									xPresent_Date_Time.hour,
+									xPresent_Date_Time.minute,
+									gprs_response);
+							send_message(msg_rcvd_number, status_response);
+							break;
+						}
+					}
+				}
+			}
+
+
+			// Reset dota cmd
+			if( (matching_ptr = look_for_str(msg_data, "RESET_DOTA")) != 0){
+				gi_start_dota = 0;
+			}
+
+			if( (matching_ptr = look_for_str(msg_data, "ERASE_DATA_SECTORS")) != 0){
+				erase_data_sector = 1;
+			}
+
+			if( (matching_ptr = look_for_str(msg_data, "RESET_LDOTA")) != 0){
+				gi_start_dota_lpc824 = 0;
+			}
+
+
+			if( (matching_ptr = look_for_str(msg_data, "RESTART")) != 0)
+				gi_restart_flag = 1;
+
+			if( (matching_ptr = look_for_str(msg_data, "SEND_SMS")) != 0){
+				sscanf(matching_ptr, "SEND_SMS\rNUMBER=%s\rTEXT=%[^;]",&ctemp1,&ctemp2);
+				strcat(ctemp2,"\032");
+				send_message(ctemp1, ctemp2);
+			}
+
+			// .............send status message ...................
+
+			// all set type commands ........
+			else if ((matching_ptr = look_for_str(msg_data, "SET_")) != 0){
+				// setting station name and id ....
+				if ((matching_ptr = look_for_str(msg_data, "STATION")) != 0){
+					if((matching_ptr = look_for_str(msg_data, "NUMBER")) != 0){
+						sscanf(matching_ptr, "NUMBER=%s", &Global_Data_Params.gc_station_id);
+						strcpy(gc_station_id1, Global_Data_Params.gc_station_id);
+					}
+					if((matching_ptr = look_for_str(msg_data, "NAME")) != 0)
+						sscanf(matching_ptr, "NAME=%s",&Global_Data_Params.gc_station_name);
+					//save params in flash
+				}
+				// ........// setting station name and id ....ends here
+
+				// setting http parameter1.....starts here..
+				else if ((matching_ptr = look_for_str(msg_data, "HTTP_PARAMS1")) != 0) {
+					if((matching_ptr = look_for_str(msg_data, "SERVER")) != 0)
+						sscanf(matching_ptr,"SERVER=%s", &Global_Data_Params.gc_http_server_name1);
+					if((matching_ptr = look_for_str(msg_data, "PATH")) != 0)
+						sscanf(matching_ptr,"PATH=%s", &Global_Data_Params.gc_http_link1);
+					if((matching_ptr = look_for_str(msg_data, "PORT")) != 0)
+						sscanf(matching_ptr,"PORT=%d", &Global_Data_Params.gi_http_server_port1);
+					if((matching_ptr = look_for_str(msg_data, "KEY")) != 0)
+						sscanf(matching_ptr,"KEY=%s", &Global_Data_Params.gc_http_key1);
+				}
+				// setting http parameter1.....ends here...
+
+				// setting http parameter2.....starts here
+				else if ((matching_ptr = look_for_str(msg_data, "HTTP_PARAMS2")) != 0) {
+					if((matching_ptr = look_for_str(msg_data, "SERVER")) != 0)
+						sscanf(matching_ptr,"SERVER=%s", &Global_Data_Params.gc_http_server_name2);
+					if((matching_ptr = look_for_str(msg_data, "PATH")) != 0)
+						sscanf(matching_ptr,"PATH=%s", &Global_Data_Params.gc_http_link2);
+					if((matching_ptr = look_for_str(msg_data, "PORT")) != 0)
+						sscanf(matching_ptr,"PORT=%d", &Global_Data_Params.gi_http_server_port2);
+					if((matching_ptr = look_for_str(msg_data, "KEY")) != 0)
+						sscanf(matching_ptr,"KEY=%s", &Global_Data_Params.gc_http_key2);
+				}
+				// setting http parameter2.....ends here
+
+				// setting ftp parameter1.....starts here
+				else if ((matching_ptr = look_for_str(msg_data, "FTP_PARAMS1")) != 0) {
+					if((matching_ptr = look_for_str(msg_data, "SERVER")) != 0)
+						sscanf(matching_ptr, "SERVER=%s", &Global_Data_Params.gc_ftp_server_name1);
+					if((matching_ptr = look_for_str(msg_data, "USER")) != 0)
+						sscanf(matching_ptr, "USER=%s", &Global_Data_Params.gc_ftp_user1);
+					if((matching_ptr = look_for_str(msg_data, "PWD")) != 0)
+						sscanf(matching_ptr, "PWD=%s", &Global_Data_Params.gc_ftp_pwd1);
+				}
+				// setting fpt parameter1.....ends here
+
+				// setting ftp parameter2.....starts here
+				else if ((matching_ptr = look_for_str(msg_data, "FTP_PARAMS2")) != 0) {
+					if((matching_ptr = look_for_str(msg_data, "SERVER")) != 0)
+						sscanf(matching_ptr, "SERVER=%s", &Global_Data_Params.gc_ftp_server_name2);
+					if((matching_ptr = look_for_str(msg_data, "USER")) != 0)
+						sscanf(matching_ptr, "USER=%s", &Global_Data_Params.gc_ftp_user2);
+					if((matching_ptr = look_for_str(msg_data, "PWD")) != 0)
+						sscanf(matching_ptr, "PWD=%s", &Global_Data_Params.gc_ftp_pwd2);
+				}
+				// setting fpt parameter2.....ends here
+
+				// setting GSM parameters.....starts here
+				else if ((matching_ptr = look_for_str(msg_data, "M_GSM_NUMBER")) != 0) {
+					sscanf(matching_ptr,"M_GSM_NUMBER=%s", &Global_Data_Params.gc_master_gsm);
+				}
+
+				else if ((matching_ptr = look_for_str(msg_data, "U_GSM_NUMBER")) != 0) {
+					sscanf(matching_ptr, "U_GSM_NUMBER=%s", &Global_Data_Params.gc_universal_gsm);
+				}
+
+				else if ((matching_ptr = look_for_str(msg_data, "S_GSM_NUMBER")) != 0) {
+					sscanf(matching_ptr, "S_GSM_NUMBER=%s", &Global_Data_Params.gc_secondary_gsm);
+				}
+
+				// setting GSM parameters.....ends here
+
+				// setting ISP0 parameters.....starts here
+				else if ((matching_ptr = look_for_str(msg_data, "ISP_PARAMS0")) != 0) {
+					if((matching_ptr = look_for_str(msg_data, "SVC")) != 0)
+						sscanf(matching_ptr,"SVC=%s", &Global_Data_Params.ISP_APN_PARAMS[0].svc);
+					if((matching_ptr = look_for_str(msg_data, "APN")) != 0)
+						sscanf(matching_ptr,"APN=%s", &Global_Data_Params.ISP_APN_PARAMS[0].apn);
+					if((matching_ptr = look_for_str(msg_data, "APN_USER")) != 0)
+						sscanf(matching_ptr,"APN_USER=%s", &Global_Data_Params.ISP_APN_PARAMS[0].apn_user);
+					if((matching_ptr = look_for_str(msg_data, "APN_PWD")) != 0)
+						sscanf(matching_ptr,"APN_PWD=%s", &Global_Data_Params.ISP_APN_PARAMS[0].apn_pwd);
+				}
+				// setting ISP0 parameters.....ends here
+
+				// setting ISP1 parameters.....starts here
+				else if ((matching_ptr = look_for_str(msg_data, "ISP_PARAMS1")) != 0) {
+					if((matching_ptr = look_for_str(msg_data, "SVC")) != 0)
+						sscanf(matching_ptr,"SVC=%s", &Global_Data_Params.ISP_APN_PARAMS[1].svc);
+					if((matching_ptr = look_for_str(msg_data, "APN")) != 0)
+						sscanf(matching_ptr,"APN=%s", &Global_Data_Params.ISP_APN_PARAMS[1].apn);
+					if((matching_ptr = look_for_str(msg_data, "APN_USER")) != 0)
+						sscanf(matching_ptr,"APN_USER=%s", &Global_Data_Params.ISP_APN_PARAMS[1].apn_user);
+					if((matching_ptr = look_for_str(msg_data, "APN_PWD")) != 0)
+						sscanf(matching_ptr,"APN_PWD=%s", &Global_Data_Params.ISP_APN_PARAMS[1].apn_pwd);
+				}
+				// setting ISP1 parameters.....ends here
+
+				// setting ISP2 parameters.....starts here
+				else if ((matching_ptr = look_for_str(msg_data, "ISP_PARAMS2")) != 0) {
+					if((matching_ptr = look_for_str(msg_data, "SVC")) != 0)
+						sscanf(matching_ptr,"SVC=%s", &Global_Data_Params.ISP_APN_PARAMS[2].svc);
+					if((matching_ptr = look_for_str(msg_data, "APN")) != 0)
+						sscanf(matching_ptr,"APN=%s", &Global_Data_Params.ISP_APN_PARAMS[2].apn);
+					if((matching_ptr = look_for_str(msg_data, "APN_USER")) != 0)
+						sscanf(matching_ptr,"APN_USER=%s", &Global_Data_Params.ISP_APN_PARAMS[2].apn_user);
+					if((matching_ptr = look_for_str(msg_data, "APN_PWD")) != 0)
+						sscanf(matching_ptr,"APN_PWD=%s", &Global_Data_Params.ISP_APN_PARAMS[2].apn_pwd);
+				}
+				// setting ISP2 parameters.....ends here
+
+				// setting ISP3 parameters.....starts here
+				else if ((matching_ptr = look_for_str(msg_data, "ISP_PARAMS3")) != 0) {
+					if((matching_ptr = look_for_str(msg_data, "SVC")) != 0)
+						sscanf(matching_ptr,"SVC=%s", &Global_Data_Params.ISP_APN_PARAMS[3].svc);
+					if((matching_ptr = look_for_str(msg_data, "APN")) != 0)
+						sscanf(matching_ptr,"APN=%s", &Global_Data_Params.ISP_APN_PARAMS[3].apn);
+					if((matching_ptr = look_for_str(msg_data, "APN_USER")) != 0)
+						sscanf(matching_ptr,"APN_USER=%s", &Global_Data_Params.ISP_APN_PARAMS[3].apn_user);
+					if((matching_ptr = look_for_str(msg_data, "APN_PWD")) != 0)
+						sscanf(matching_ptr,"APN_PWD=%s", &Global_Data_Params.ISP_APN_PARAMS[3].apn_pwd);
+				}
+				// setting ISP3 parameters.....ends here
+
+				// setting ISP4 parameters.....starts here
+				else if ((matching_ptr = look_for_str(msg_data, "ISP_PARAMS4")) != 0) {
+					if((matching_ptr = look_for_str(msg_data, "SVC")) != 0)
+						sscanf(matching_ptr,"SVC=%s", &Global_Data_Params.ISP_APN_PARAMS[4].svc);
+					if((matching_ptr = look_for_str(msg_data, "APN")) != 0)
+						sscanf(matching_ptr,"APN=%s", &Global_Data_Params.ISP_APN_PARAMS[4].apn);
+					if((matching_ptr = look_for_str(msg_data, "APN_USER")) != 0)
+						sscanf(matching_ptr,"APN_USER=%s", &Global_Data_Params.ISP_APN_PARAMS[4].apn_user);
+					if((matching_ptr = look_for_str(msg_data, "APN_PWD")) != 0)
+						sscanf(matching_ptr,"APN_PWD=%s", &Global_Data_Params.ISP_APN_PARAMS[4].apn_pwd);
+				}
+				// setting ISP4 parameters.....ends here
+
+				// setting log interval.....starts here
+				else if((matching_ptr = look_for_str(msg_data, "INTERVAL")) != 0){
+					if((matching_ptr = look_for_str(msg_data, "LOG_INTERVAL")) != 0)
+						sscanf(matching_ptr,"LOG_INTERVAL=%d", &Global_Data_Params.gi_log_interval);
+					if((matching_ptr = look_for_str(msg_data, "rREP_INTERVAL")) != 0)
+						sscanf(matching_ptr,"REP_INTERVAL=%d", &Global_Data_Params.gi_report_interval);
+
+				}
+				// setting log interval.....ends here
+
+
+				/*	else if((matching_ptr = look_for_str(msg_data, "CLOSING")) != 0){
+					if((matching_ptr = look_for_str(msg_data, "CLOSING_HOUR")) != 0)
+						sscanf(matching_ptr,"CLOSING_HOUR=%d", &Global_Data_Params.);
+					if((matching_ptr = look_for_str(msg_data, "CLOSING_MIN")) != 0)
+						sscanf(matching_ptr,"CLOSING_MIN=%d", &gi_closing_minute);
+				}*/
+
+
+
+				// setting cmd for firmware updation.....starts here
+				else if((matching_ptr = look_for_str(msg_data, "FW_FOR_LPC")) != 0){
+					if((matching_ptr = look_for_str(msg_data, "FILE")) != 0){
+						sscanf(matching_ptr,"FILE=%s", &gc_dota_file_name);
+						gi_start_dota = 1;
+					}
+				}
+
+				// setting cmd for firmware updation.....ends here
+
+
+				// setting cmd for firmware updation for LPC824.....starts here
+				else if((matching_ptr = look_for_str(msg_data, "FIRMWARE_824")) != 0){
+					if((matching_ptr = look_for_str(msg_data, "FILE")) != 0){
+						sscanf(matching_ptr,"FILE=%s", &gc_dota_file_name);
+						gi_start_dota_lpc824 = 1;
+					}
+				}
+
+
+				else if((matching_ptr = look_for_str(msg_data, "SELECT_SIM")) != 0){
+					if((matching_ptr = look_for_str(msg_data, "SELECT_SIM")) != 0){
+						sscanf(matching_ptr,"SELECT_SIM=%d", &sim_select);
+						Global_Data_Params.gi_sim_select = sim_select;
+					}
+				}
+
+				else if((matching_ptr = look_for_str(msg_data, "DATA_SMS")) != 0){
+					if((matching_ptr = look_for_str(msg_data, "DATA_SMS")) != 0){
+						sscanf(matching_ptr,"DATA_SMS=%d", &Global_Data_Params.gi_send_data_sms);
+						//Global_Data_Params.gi_sim_select = sim_select;
+					}
+				}
+
+				// Communication module updation ..... ends here
+
+				// save the params in the disk or flash
+				XITC_Gprs_Disk.command = eSave_Params;
+				XITC_Gprs_Disk.signal = 1;
+				while(XITC_Gprs_Disk.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+
+				gi_save_params_in_flash = 1;
+
+				// insert responses here..
+			}
+			// .......... all set type commands ........end here....
+
+			// Now Get type commands start .........
+			// V 1.6 changes
+			else if ((matching_ptr = look_for_str(msg_data, "$STATUS")) != 0){
+				prepare_and_send_status(msg_rcvd_number);
+			}
+			else if ((matching_ptr = look_for_str(msg_data, "GET_")) != 0){
+				if ((matching_ptr = look_for_str(msg_data, "STATUS")) != 0){
+					prepare_and_send_status(msg_rcvd_number);
+				}
+
+				else if ((matching_ptr = look_for_str(msg_data, "GPS")) != 0){
+					get_gps = 1;
+					get_gps_info();
+				}
+
+				else if ((matching_ptr = look_for_str(msg_data, "DATA")) != 0){
+					sscanf(matching_ptr, "DATA\rDATE=%d-%d-%d\rTIME=%d:%d",
+							&XITC_Gprs_Disk.date, &XITC_Gprs_Disk.month, &XITC_Gprs_Disk.year,
+							&XITC_Gprs_Disk.hour, &XITC_Gprs_Disk.minute);
+					XITC_Gprs_Disk.command = eGet_Rec;
+					XITC_Gprs_Disk.signal = 1;
+					while(XITC_Gprs_Disk.signal)
+						vTaskDelay(100 / portTICK_RATE_MS);
+					status_response[0] = 0;
+					//			sprintf(record, "stn_no=%s,rec_time=%04d-%02d-%02d,%02d:%02d:00,rainfall=%03d.%1d,signal=%d,bat_vol=%02d.%02d\r\n",
+					//stn_no=%s,rec_time=%04d-%02d-%02d,%02d:%02d,rainfall=%03d.%01d,signal=%d,bat_volt1=%02d.%02d,bat_volt2=%02d.%02d\r\n"
+					//stn_no=001920,rec_time=2021-01-20,00:00,rainfall=015.5,signal=114,bat_volt1=13.09,bat_volt2=13.09\r\n
+					sscanf(XITC_Gprs_Disk.data,"stn_no=%[^,],rec_time=%d-%d-%d,%d:%d,rainfall=%f,signal=%[^,],bat_volt1=%f",
+							&ctemp1, &XITC_Gprs_Disk.year, &XITC_Gprs_Disk.month, &XITC_Gprs_Disk.date,
+							&XITC_Gprs_Disk.hour, &XITC_Gprs_Disk.minute, &ftemp1, &ctemp2, &ftemp3);
+
+					if(XITC_Gprs_Disk.result == eLine_Read){
+						//sprintf(status_response, "\r\nVARSHA-TRG\r\nSTN_NO=%s\r\n\032", XITC_Gprs_Disk.data);
+						/*	sprintf(status_response, "\r\nSPATIKA\r\nTRGDAT-R\r\nSTN=%s\r\nDAT=%02d-%02d-%04d\r\nTIM=%02d:%02d\r\nREC=Y\r\nRFV=%03d.%d\r\nSIG=%s\r\n\032",
+								ctemp1,XITC_Gprs_Disk.date, XITC_Gprs_Disk.month, XITC_Gprs_Disk.year,
+								XITC_Gprs_Disk.hour,XITC_Gprs_Disk.minute, itemp1 ,itemp2, ctemp2);*/
+
+
+						sprintf(status_response, "%s,%s,RG-DATA,%s,%04d-%02d-%02dT%02d:%02d,Y,%.1f,%s,%.2f,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+								Global_Data_Params.gc_network_name,
+								Global_Data_Params.gc_station_type,
+								ctemp1,
+								XITC_Gprs_Disk.year,
+								XITC_Gprs_Disk.month,
+								XITC_Gprs_Disk.date,
+								XITC_Gprs_Disk.hour,
+								XITC_Gprs_Disk.minute,
+								ftemp1,
+								ctemp2,
+								ftemp3,
+								gi_log_year,
+								gi_log_month,
+								gi_log_date,
+								gi_log_hour,
+								gi_log_minute,
+								gi_present_error);
+						send_message(msg_rcvd_number, status_response);
+					}
+					else{
+						/*sprintf(status_response, "\r\nSPATIKA\r\nTRGDAT-R\r\nSTN=%s\r\nDAT=%02d-%02d-%04d\r\nTIM=%02d:%02d\r\nREC=N\r\n\032",
+								station_id,XITC_Gprs_Disk.date, XITC_Gprs_Disk.month, XITC_Gprs_Disk.year,
+								XITC_Gprs_Disk.hour,XITC_Gprs_Disk.minute);
+						send_message(msg_rcvd_number, status_response);*/
+						sprintf(status_response, "%s,%s,RG-DATA,%s,%04d-%02d-%02dT%02d:%02d,N\r\n\032",
+								Global_Data_Params.gc_network_name,
+								Global_Data_Params.gc_station_type,
+								Global_Data_Params.gc_station_id,
+								XITC_Gprs_Disk.year,
+								XITC_Gprs_Disk.month,
+								XITC_Gprs_Disk.date,
+								XITC_Gprs_Disk.hour,
+								XITC_Gprs_Disk.minute);
+						send_message(msg_rcvd_number, status_response);
+
+					}
+				}
+
+				else if ((matching_ptr = look_for_str(msg_data, "MEMORY")) != 0){
+					sscanf(matching_ptr, "MEMORY\rDATE=%d-%d-%d\rTIME=%d:%d", &m_date, &m_month, &m_year,&m_hour, &m_minute);
+
+					mrec_no = m_hour*4 + m_minute/15;
+					mrec_no = (mrec_no + 61) % 96 ;
+
+					if(mrec_no <= 60){
+						Next_Date(&m_date, &m_month, &m_year);
+
+					}
+
+					for(msect_no=2, mfound=0; ((msect_no<4) && !mfound);){
+						if((days_sector[msect_no-2]->date == m_date) && (days_sector[msect_no-2]->month == m_month) && (days_sector[msect_no-2]->year == m_year)){
+							mfound =1;
+						}
+						else
+							msect_no++;
+					}
+
+					if(mfound == 1){
+
+						//cumulative_rf(xLast_Rec_15min_Date_Time.date, xLast_Rec_15min_Date_Time.month, xLast_Rec_15min_Date_Time.year, xLast_Rec_15min_Date_Time.hour, xLast_Rec_15min_Date_Time.minute);
+						vTaskDelay(1 / portTICK_RATE_MS);
+
+						mbat_volt1 = ((((float)(days_sector[msect_no-2]->samples[mrec_no].battery1) * 3.3/4095)/0.138));
+
+						sprintf(status_response, "%s,%s,RG-MDATA,%s,%04d-%02d-%02dT%02d:%02d,Y,%d,%d,%.2f,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+								Global_Data_Params.gc_network_name,
+								Global_Data_Params.gc_station_type,
+								Global_Data_Params.gc_station_id,
+								m_year,
+								m_month,
+								m_date,
+								m_hour,
+								m_minute,
+								days_sector[msect_no-2]->samples[mrec_no].rf,
+								days_sector[msect_no-2]->samples[mrec_no].signal,
+								mbat_volt1,
+								gi_log_year,
+								gi_log_month,
+								gi_log_date,
+								gi_log_hour,
+								gi_log_minute,
+								gi_present_error);
+						send_message(msg_rcvd_number, status_response);
+						vTaskDelay(100 / portTICK_RATE_MS);
+
+
+					}
+					else{
+						sprintf(status_response, "%s,%s,RG-MDATA,%s,%04d-%02d-%02dT%02d:%02d,N\r\n\032",
+								Global_Data_Params.gc_network_name,
+								Global_Data_Params.gc_station_type,
+								Global_Data_Params.gc_station_id,
+								m_year,
+								m_month,
+								m_date,
+								m_hour,
+								m_minute);
+						send_message(msg_rcvd_number, status_response);
+						vTaskDelay(100 / portTICK_RATE_MS);
+
+
+					}
+
+
+				}
+
+				else if ((matching_ptr = look_for_str(msg_data, "AUTO_DUMP")) != 0){
+					//int date, month, year;
+					sscanf(matching_ptr, "AUTO_DUMP\rDATE=%d-%d-%d",&auto_dump_date, &auto_dump_month, &auto_dump_year);
+
+					XITC_Gprs_Disk.command = ePrepare_Auto_Dump;
+					XITC_Gprs_Disk.signal = 1;
+					while(XITC_Gprs_Disk.signal)
+						vTaskDelay(100 / portTICK_RATE_MS);
+					sprintf(dump_buf, "%s\032",dump_buf);
+					response_no =  send_message(msg_rcvd_number, dump_buf);
+					XITC_Gprs_Disk.signal = 0;
+				}
+			}
+			// .......Get type commands end here
+		}
+		// if there is a response, send the response to both master and universal gsms
+		// delete all read and sent messages
+		response_no = Send_And_Check_Gprs("AT+CMGD=1,2\r\n", "OK", "ERROR", 5000);
+
+		//	sprintf(msg_cmd, "AT+CMGD=%d\r\n", msg_no);
+		//	response_no = Send_And_Check_Gprs(msg_cmd, "OK", "ERROR", 5000);
+		vTaskDelay(100 / portTICK_RATE_MS);
+	}
+}
+
+
+
+void init_gprs_uart(LPC_UART_TypeDef* gprs_port)
+{
+	UART_CFG_Type UART_InitStruct;
+	UART_FIFO_CFG_Type UART_FIFOInitStruct;
+	UART_ConfigStructInit(&UART_InitStruct);
+	UART_InitStruct.Baud_rate = 115200;
+	//	UART_InitStruct.Baud_rate = 9600;
+	UART_Init(gprs_port, &UART_InitStruct);
+	UART_SetupCbs(gprs_port, 0, &gprs_recv_isr);
+	UART_SetupCbs(gprs_port, 1, &gprs_xmit_isr);
+	UART_FIFOConfigStructInit(&UART_FIFOInitStruct);
+	UART_FIFOConfig(gprs_port, &UART_FIFOInitStruct);
+	UART_IntConfig(gprs_port, UART_INTCFG_RBR, ENABLE);
+	UART_IntConfig(gprs_port, UART_INTCFG_THRE, ENABLE);
+	UART_TxCmd(gprs_port,ENABLE);
+	NVIC_EnableIRQ(UART2_IRQn);
+}
+
+void UART2_IRQHandler(void)
+{
+	UART2_StdIntHandler();
+}
+
+
+void gprs_xmit_isr(void)
+{
+	if(*gprs_xmit_ptr){
+		UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr);
+		gprs_xmit_ptr++;
+	}
+}
+
+void gprs_recv_isr(void)
+{
+	char c;
+
+	*((char *)(0x2007c000 + gprs_recv_in_cnt) )= UART_ReceiveData((LPC_UART_TypeDef*) GPRS_UART);
+	c = *((char *)(0x2007c000 + gprs_recv_in_cnt)) ;
+	if(*((char *)(0x2007c000 + gprs_recv_in_cnt) ) == 0x03)
+		end_of_text_recd = 1;
+	gprs_recv_in_cnt = (gprs_recv_in_cnt+1)%(RECVBUF_SIZE);  //(sizeof(gprs_recv_buf)
+
+	gi_dota_state %= 5;
+	switch(gi_dota_state){
+	case eMatch_E:
+		if(c=='E')
+			gi_dota_state= eMatch_R1;
+		else
+			gi_dota_state = eMatch_E;
+		break;
+	case eMatch_R1:
+		if(c=='R')
+			gi_dota_state= eMatch_R2;
+		else
+			gi_dota_state = eMatch_E;
+		break;
+	case eMatch_R2:
+		if(c=='R')
+			gi_dota_state= eMatch_O;
+		else
+			gi_dota_state = eMatch_E;
+		break;
+	case eMatch_O:
+		if(c=='O')
+			gi_dota_state= eMatch_R3;
+		else
+			gi_dota_state = eMatch_E;
+		break;
+
+	case eMatch_R3:
+		if((c=='R')&&(gi_dota_error==0))
+			gi_dota_error = 1;
+		else
+			gi_dota_state = eMatch_E;
+		break;
+	default:
+		break;
+
+	}
+}
+
+
+int Send_And_Check_Gprs(char* xmit_str, char *ack, char *nack, int timeout)
+{
+
+	char *matching_ptr;
+	int lf_recd, response_in_count, msg_no;
+	lf_recd = response_in_count = 0;
+	// get ready for transmitting
+	gprs_xmit_ptr = xmit_str;
+	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+	vTaskDelay(25 / portTICK_RATE_MS);	// wait a while for transmission to take place
+	timeout /= 10;						// take care of 10 ms wait in the loop
+
+	while(timeout > 0){
+		lf_recd = response_in_count = 0;
+		gprs_response[0] =0;
+		while(( (lf_recd = getline((char *)0x2007c000, gprs_response, &gprs_recv_in_cnt, &gprs_recv_out_cnt,
+				&response_in_count, RECVBUF_SIZE, LINE_FEED)) != 1) &&(timeout)) {
+			vTaskDelay(10 / portTICK_RATE_MS); //sizeof(gprs_recv_buf)
+			timeout--;
+		}
+		if(lf_recd){
+			if(0 != (matching_ptr = look_for_str(gprs_response, ack)))
+				return(1);
+			else if (0 != (matching_ptr = look_for_str(gprs_response,nack)))
+				return(2);
+			else if (0 != (matching_ptr = look_for_str(gprs_response, "+CMTI:"))){
+				sscanf(matching_ptr, "+CMTI: \"SM\",%d", &msg_no);
+				if(msg_no <= MAX_NO_OF_MSGS)
+					message_recd[msg_no] = 1;
+			}
+			else {
+				vTaskDelay(10 / portTICK_RATE_MS);
+				timeout--;
+			}
+		}
+	}
+	if ((timeout == 0) && (lf_recd != 1)){
+		gprs_timeout_occurred = 1;
+		return(eTimeout);
+	}
+}
+
+
+void check_basic_commands(void)
+{
+
+	int i,j;
+
+	response_no=Send_And_Check_Gprs("\r\nAT\r\n", "OK", "ERROR", 1000);
+	response_no=Send_And_Check_Gprs("\r\nAT\r\n", "OK", "ERROR", 1000);
+	response_no=Send_And_Check_Gprs("\r\nATE0V1\r\n", "OK", "ERROR", 1000);	// disable echo enable verbose
+	response_no=Send_And_Check_Gprs("\r\nAT+CMGF=1\r\n", "OK", "ERROR", 1000);	// switch to Text mode for sms
+	response_no=Send_And_Check_Gprs("\r\nAT&W\r\n", "OK", "ERROR", 3000);
+
+	if(response_no != eAck){
+		response_no=Send_And_Check_Gprs("\r\nAT+CFUN=1,1\r\n", "OK", "ERROR", 3000);
+		vTaskDelay(6000 / portTICK_RATE_MS);
+	}
+
+	vTaskDelay(500 / portTICK_RATE_MS);
+
+}
+
+
+
+
+
+void check_sim_cpin(void){
+	int iCountTemp;
+
+	response_no=eNack;
+
+	for(iCountTemp=0; iCountTemp<10; iCountTemp++){
+		response_no	=	Send_And_Check_Gprs("AT+CPIN?\r\n", "+CPIN: READY","ERROR", 5000);
+		if(response_no == eAck){
+			gi_sim_state = 1;
+			process_msgs = 1;
+			break;
+		}
+		else
+			vTaskDelay(1000 / portTICK_RATE_MS);
+	}
+	if(response_no != eAck){
+		//need to reset module and check once again
+		response_no=Send_And_Check_Gprs("\r\nAT+CFUN=1,1\r\n", "OK", "ERROR", 3000);
+		vTaskDelay(2000 / portTICK_RATE_MS);
+		gi_sim_state = 0;
+
+	}
+
+}
+
+void check_sim_registration(void){
+	int iCountTemp, temp;
+
+	response_no=eNack;
+
+	for(iCountTemp=0; iCountTemp<140; iCountTemp++){
+		response_no	=	Send_And_Check_Gprs("AT+CREG?\r\n", "+CREG: ","ERROR", 5000);
+		if(response_no == eAck){
+			sscanf(gprs_response, "+CREG: %d,%d", &temp, &gi_sim_reg);
+			if(gi_sim_reg == 1)
+				break;
+
+			else{
+
+				vTaskDelay(1000 / portTICK_RATE_MS);
+			}
+		}
+		else
+			vTaskDelay(500 / portTICK_RATE_MS);
+
+	}
+	if(response_no != eAck)
+		//need to reset module and check once again
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+}
+
+void get_signal_level(void){
+	int iCountTemp, sig_lvl;
+
+	response_no=eNack;
+	if(gi_sim_state == 1){
+		for(iCountTemp=0; iCountTemp<10; iCountTemp++){
+			response_no	=	Send_And_Check_Gprs("AT+CSQ\r\n", "+CSQ:", "ERROR", 5000);
+			if(response_no == eAck){
+				sscanf(gprs_response, "+CSQ: %d", &sig_lvl);
+				gi_signal_level = sig_lvl*2 -1 -113;
+				if(gi_signal_level < 0)
+					break;
+			}
+			else
+				vTaskDelay(500 / portTICK_RATE_MS);
+		}
+	}
+	else
+		gi_signal_level = 0;
+}
+
+
+void get_apn(void){
+	/*
+
+ AT+COPS?
++COPS: 0,0,"airtel airtel",0
++COPS: 0,0,"BSNL MOBILE BSNL MOBILE",0
++COPS: 0,0,"Vodafone IN Vodafone IN",0
++COPS: 0,0,"Vi India Idea",7
+	 */
+	int iCountTemp, j;
+	response_no=eNack;
+
+	if( (response_no = Send_And_Check_Gprs("AT+COPS?\r\n", "+COPS: 0,0,", "ERROR", 15000)) == eAck){
+		for(iCountTemp=0; iCountTemp<5; iCountTemp++){
+			//if(matching_ptr = look_for_str(gprs_response, Global_Data_Params.ISP_APN_PARAMS[iCountTemp].mobile_network)){
+			if((matching_ptr = look_for_str(gprs_response, Global_Data_Params.ISP_APN_PARAMS[iCountTemp].mobile_network)) != 0){
+				strcpy(gc_apn_str, Global_Data_Params.ISP_APN_PARAMS[iCountTemp].apn);
+				strcpy(gc_apn_user_name, Global_Data_Params.ISP_APN_PARAMS[iCountTemp].apn_user);
+				strcpy(gc_apn_user_pwd, Global_Data_Params.ISP_APN_PARAMS[iCountTemp].apn_pwd);
+				break;
+			}
+		}
+		strcpy(gc_apn_str, "airtelgprs.com");//set default apn
+	}
+	else{
+		strcpy(gc_apn_str, "airtelgprs.com");//set default apn
+		vTaskDelay(400 / portTICK_RATE_MS);
+	}
+}
+
+
+
+void get_gps_info(void){
+	int iCountTemp, gps_located;
+	char LatDD[2],LatMM[9],LogDD[3],LogMM[9],Dd[2], Mm[2], Yy[6] , Hh[2], mM[2], Ss[2], Alt[5];
+	char sim_holder[5];
+	char msg_type;
+	float Lat,Lat1,Log,Log1;
+
+	gps_found = 0;
+	gps_located = 0;
+
+	response_no =  Send_And_Check_Gprs("AT+CGPS=0\r\n", "OK", "ERROR", 5000);
+	vTaskDelay(3000 / portTICK_RATE_MS);
+
+	if((response_no = Send_And_Check_Gprs("AT+CGPS=1\r\n", "OK", "ERROR", 5000)) == eAck)
+		vTaskDelay(12000 / portTICK_RATE_MS);
+	else{
+		gi_gps_error = 1;
+		response_no =  Send_And_Check_Gprs("AT+CGPS=0\r\n", "OK", "ERROR", 5000);
+	}
+
+	if(Global_Data_Params.gi_sim_select == 0)
+		strcpy(sim_holder, "SIM_1");
+	else
+		strcpy(sim_holder, "SIM_2");
+
+	if(get_gps == 1)
+		msg_type = 'C';
+	else
+		msg_type = 'F';
+
+
+
+	for(iCountTemp=0; iCountTemp<8; iCountTemp++){
+
+		response_no	=	Send_And_Check_Gprs("AT+CGPSINFO\r\n", "+CGPSINFO:", "ERROR", 5000);
+		gps_located = ((matching_ptr = look_for_str(gprs_response, ",,,,,,")) != 0 ) ? 0 : 1 ;
+
+		if((response_no == eAck) && (gps_located == 1)){
+
+			gps_found = 1;
+
+			//+CGPSINFO: 1259.432487,N,07732.253059,E,270820,075955.0,965.2,0.0,267.7
+			vTaskDelay(200 / portTICK_RATE_MS);
+			//strcpy(gprs_response, "+CGPSINFO: 1259.432487,N,07732.253059,E,270820,075955.0,965.2,0.0,267.7");
+
+			strncpy(LatDD,gprs_response+11,2);
+			strncpy(LatMM,gprs_response+13,9);
+			Lat = atoi(LatDD);
+			sscanf(LatMM,"%f",&Lat1);
+			GPS.latitude = (Lat1 /60) + Lat;
+
+			GPS.lat_dir = gprs_response[23];
+
+			strncpy(LogDD,gprs_response+25,3);
+			strncpy(LogMM,gprs_response+28,9);
+			Log = atoi(LogDD);
+			sscanf(LogMM,"%f",&Log1);
+			GPS.longitude = (Log1 /60) + Log;
+
+			GPS.lon_dir = gprs_response[38];
+
+			strncpy(Dd,gprs_response+40,2);
+			sscanf(Dd,"%d",&GPS.date);
+			strncpy(Mm,gprs_response+42,2);
+			sscanf(Mm,"%d",&GPS.month);
+			strncpy(Yy,gprs_response+44,2);
+			sscanf(Yy,"%d",&GPS.year);
+
+			GPS.year +=2000;
+
+			strncpy(Hh,gprs_response+47,2);
+			sscanf(Hh,"%d",&GPS.hour);
+			strncpy(mM,gprs_response+49,2);
+			sscanf(mM,"%d",&GPS.min);
+			strncpy(Ss,gprs_response+51,2);
+			sscanf(Ss,"%d",&GPS.sec);
+
+			strncpy(Alt,gprs_response+56,5);
+			sscanf(Alt,"%f",&GPS.altitude);
+
+
+			sprintf(status_response,"KSNDMC,TRG,STAT_AD-%c,%s,%04d-%02d-%02dT%02d:%02d,%s,%04d,%.6f%c,%.6f%c,%.1f,%04d-%02d-%02dT%02d:%02d:%02d\r\n\032",
+					msg_type,
+					Global_Data_Params.gc_station_id,
+					xPresent_Date_Time.year,
+					xPresent_Date_Time.month,
+					xPresent_Date_Time.date,
+					xPresent_Date_Time.hour,
+					xPresent_Date_Time.minute,
+					sim_holder,
+					gi_signal_level,
+					GPS.latitude,
+					GPS.lat_dir,
+					GPS.longitude,
+					GPS.lon_dir,
+					GPS.altitude,
+					GPS.year,
+					GPS.month,
+					GPS.date,
+					GPS.hour,
+					GPS.min,
+					GPS.sec);
+
+
+			/*		sprintf(status_response,"GPS_INFO, Stn_ID=%s, Lat.=%.6f %c, Long.=%.6f %c, Alt.= %.1f, UTC_DT=%02d-%02d-%02d %02d:%02d:%02d\r\n\032",
+					Global_Data_Params.gc_station_id,
+					GPS.latitude,
+					GPS.lat_dir,
+					GPS.longitude,
+					GPS.lon_dir,
+					GPS.altitude,
+					GPS.date,
+					GPS.month,
+					GPS.year,
+					GPS.hour,
+					GPS.min,
+					GPS.sec);*/
+
+			response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
+			vTaskDelay(100 / portTICK_RATE_MS);
+
+
+			break;
+		}
+		else
+			vTaskDelay(3000 / portTICK_RATE_MS);
+	}
+
+	if(gps_found == 0){
+		sprintf(status_response,"KSNDMC,TWS,STAT_AD-%c,%s,%04d-%02d-%02dT%02d:%02d,%s,%04d,NA,NA,NA,NA\r\n\032",
+				msg_type,
+				Global_Data_Params.gc_station_id,
+				xPresent_Date_Time.year,
+				xPresent_Date_Time.month,
+				xPresent_Date_Time.date,
+				xPresent_Date_Time.hour,
+				xPresent_Date_Time.minute,
+				sim_holder,
+				gi_signal_level);
+
+		response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
+		vTaskDelay(100 / portTICK_RATE_MS);
+	}
+
+	get_gps = 0;
+	response_no =  Send_And_Check_Gprs("AT+CGPS=0\r\n", "OK", "ERROR", 5000);
+	vTaskDelay(200 / portTICK_RATE_MS);
+
+}
+
+
+int connect_ftp2(){
+
+	/*	sprintf(gprs_xmit_buf,"AT+CFTPSSTOP\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 5000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	vTaskDelay(1000 / portTICK_RATE_MS);*/
+
+
+	sprintf(gprs_xmit_buf,"AT+CGSOCKCONT=1,\"IP\",\"%s\"\r\n",gc_apn_str);
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 5000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	sprintf(gprs_xmit_buf,"AT+CGPADDR\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+CGPADDR:", "ERROR", 5000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+
+	sprintf(gprs_xmit_buf,"AT+CFTPSSTART\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+CFTPSSTART: 0", "ERROR", 15000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	sprintf(gprs_xmit_buf,"AT+CFTPSSINGLEIP=1\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 5000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	sprintf(gprs_xmit_buf,"AT+CFTPSLOGIN=\"%s\",%d,\"%s\",\"%s\",0\r\n",Global_Data_Params.gc_ftp_server_name2, Global_Data_Params.gi_ftpserver_port2, Global_Data_Params.gc_ftp_user2, Global_Data_Params.gc_ftp_pwd2);
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+CFTPSLOGIN: 0", "ERROR", 25000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no == eAck){
+		return(1);
+	}
+	else
+		return(-1);
+
+
+}
+
+
+
+int  ftp_dota(void)
+{
+	int xfr_res, bytes_recevd, stat, reply, code_start,i ;
+	//	int char_count;
+	char *matching_ptr;
+	int lf_recd, timeout;
+	char temp_file_name[32];
+	int response_out_cnt;
+	char recv_str[700];
+	char recv_decode_str[700];
+
+	//	int packet_recved;
+	int start_byte;
+	int err_cnt;
+
+	int p;
+	char *rptr;
+	char match_str[32];
+
+	int temp_cnt;
+	temp_cnt = 0;
+
+	//	char recv_str[600];
+
+	char_count = 0;
+	bytes_recevd = 0;
+	err_cnt = 0;
+	response_out_cnt = 0;
+
+	start_byte = 0;
+	xfr_res = eXfer_Fail;
+	gi_dota_error = 0;
+
+	//	strcpy(gc_dota_file_name, "trg5.hex");
+
+	//AT+FSDEL=*.*
+	sprintf(gprs_xmit_buf,"AT+FSDEL=*.*\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 15000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+
+	vTaskDelay(1000 / portTICK_RATE_MS);
+
+	sprintf(gprs_xmit_buf,"AT+CFTPSGETFILE=\"%s\",3\r\n",gc_dota_file_name);
+
+	response_no = eNack;
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "CFTPSGETFILE: 0", "ERROR", 180000);
+
+	if(response_no == eAck){
+		sprintf(gprs_xmit_buf,"AT+FSCD=E:/\r\n");
+		response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+FSCD: E:/", "ERROR", 15000);
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+		/*	sprintf(gprs_xmit_buf,"AT+FSLS=0\r\n");
+		response_no =  Send_And_Check_Gprs(gprs_xmit_buf, gc_dota_file_name, "ERROR", 15000);
+		vTaskDelay(10 / portTICK_RATE_MS);*/
+
+		sprintf(temp_file_name,"E:/%s", gc_dota_file_name);
+		vTaskDelay(1 / portTICK_RATE_MS);
+
+		// here first open the file fw.hex and keep it opened
+		XITC_Gprs_Disk_Fw.command = eFTP_File_Create;
+		XITC_Gprs_Disk_Fw.signal = 1;
+		while(XITC_Gprs_Disk_Fw.signal == 1)
+			vTaskDelay(5 / portTICK_RATE_MS);
+
+		vTaskDelay(1000 / portTICK_RATE_MS);
+
+		while(1){
+			temp_cnt++;
+			char_count = 0;
+			timeout = 500;
+			packet_recved = 0;
+
+			for(i=0;i<650;i++){
+				recv_str[i] = 0xff;
+				recv_decode_str[i] = 0xff;
+				//	*(ptr_RAM2+i) = 0xff;
+			}
+
+			gprs_recv_in_cnt = 0;
+			gprs_recv_out_cnt = 0;
+			response_out_cnt = 0;
+
+			//	printf("cycle %d starts stage 1\r\n", temp_cnt);
+			//printf("cycle %d starts stage 1, start byte is %d\r\n", temp_cnt,start_byte);
+
+			sprintf(gprs_xmit_buf,"AT+CFTRANTX=\"%s\",%d,512\r\n", temp_file_name,start_byte);
+			gprs_xmit_ptr = gprs_xmit_buf;
+			UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+			vTaskDelay(50 / portTICK_RATE_MS);	// wait a while for transmission to take place
+
+			vTaskDelay(200 / portTICK_RATE_MS);
+
+			while((!packet_recved) && (timeout)){
+				if(timeout){
+					timeout--;
+					vTaskDelay(1 / portTICK_RATE_MS);
+				}
+
+				while( gprs_recv_in_cnt != response_out_cnt){
+					recv_str[char_count] = *((char *)(0x2007c000 + response_out_cnt));
+					recv_str[char_count+1] = 0;
+					response_out_cnt++;
+
+					char_count++;
+					if(gprs_recv_in_cnt > 600)
+						break;
+				}
+
+				if(char_count > 32){
+					/*	if((matching_ptr = look_for_str(recv_str, "+CFTPSNOTIFY:")) != 0 ){
+
+						XITC_Gprs_Disk_Fw.command = eFile_Close;
+						XITC_Gprs_Disk_Fw.signal = 1;
+						while(XITC_Gprs_Disk_Fw.signal == 1)
+							vTaskDelay(5 / portTICK_RATE_MS);
+						gi_dota_error = 1;
+						break;
+					}*/
+
+					if((matching_ptr = look_for_str(recv_str, "OK")) != 0 )
+						packet_recved = 1;
+					else
+						packet_recved = 0;
+				}
+			}
+
+			//	printf("cycle %d starts stage 2\r\n", temp_cnt);
+
+			if((timeout == 0) || (packet_recved == 0)){
+				err_cnt++;
+				timeout = 500;
+
+				vTaskDelay(1 / portTICK_RATE_MS);
+
+				if(err_cnt > 10){
+
+					XITC_Gprs_Disk.command = eDelete_Dota_File;
+					XITC_Gprs_Disk.signal = 1;
+					while(XITC_Gprs_Disk.signal)
+						vTaskDelay(100 / portTICK_RATE_MS);
+
+					XITC_Gprs_Disk_Fw.command = eFile_Close;
+					XITC_Gprs_Disk_Fw.signal = 1;
+					while(XITC_Gprs_Disk_Fw.signal == 1)
+						vTaskDelay(5 / portTICK_RATE_MS);
+					break;
+				}
+			}
+
+			if(char_count > 32){
+				matching_ptr = mv2endof_str(recv_str, "DATA,", 150 );
+				if (matching_ptr != 0)
+					sscanf(matching_ptr, "%d\r\n", &bytes_recevd);
+			}
+			//	printf("cycle %d starts stage 3\r\n", temp_cnt);
+			if(((bytes_recevd != 512) || (packet_recved == 1)) && (char_count > 32)){
+				sprintf(match_str,"DATA,%d\r\n", bytes_recevd);
+
+				matching_ptr = mv2endof_str(recv_str, match_str, 150 );
+				//printf("cycle %d starts stage 4\r\n", temp_cnt);
+
+				if (matching_ptr != 0)
+				{
+					for(i=0;i<bytes_recevd;i++){
+						recv_decode_str[i] = *matching_ptr;
+						*matching_ptr++;
+					}
+
+					//printf("cycle %d starts stage 5\r\n", temp_cnt);
+					XITC_Gprs_Disk_Fw.buf_ptr = (char *)(recv_decode_str);
+					XITC_Gprs_Disk_Fw.count = bytes_recevd;
+					XITC_Gprs_Disk_Fw.command = eFTP_Write_Buf;
+					XITC_Gprs_Disk_Fw.signal = 1;
+					while(XITC_Gprs_Disk_Fw.signal)
+						vTaskDelay(1 / portTICK_RATE_MS);
+
+				}
+				if(bytes_recevd<512){
+					//	printf("cycle %d ends\r\n", temp_cnt);
+
+					file_saved = 1;
+					vTaskDelay(1 / portTICK_RATE_MS);
+					XITC_Gprs_Disk_Fw.command = eFile_Close;
+					XITC_Gprs_Disk_Fw.signal = 1;
+					while(XITC_Gprs_Disk_Fw.signal == 1)
+						vTaskDelay(5 / portTICK_RATE_MS);
+					break;
+				}
+				start_byte = start_byte + bytes_recevd;
+			}
+
+			else{
+				vTaskDelay(1 / portTICK_RATE_MS);
+			}
+
+			bytes_recevd = 0;
+
+		}
+	}
+}
+
+
+
+
+
+
+
+
+
+int connect_ftp1(){
+	sprintf(gprs_xmit_buf,"AT+CGSOCKCONT=1,\"IP\",\"%s\"\r\n",gc_apn_str);
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 8000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	sprintf(gprs_xmit_buf,"AT+CGPADDR\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+CGPADDR:", "ERROR", 5000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+
+	sprintf(gprs_xmit_buf,"AT+CFTPSSTART\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+CFTPSSTART: 0", "ERROR", 15000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	sprintf(gprs_xmit_buf,"AT+CFTPSSINGLEIP=1\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 5000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	//AT+CFTPSLOGIN="ftp1.ksndmc.net",21,"trg_spatika_v2@ksndmc.net","trgsp#123",0
+
+	sprintf(gprs_xmit_buf,"AT+CFTPSLOGIN=\"%s\",%d,\"%s\",\"%s\",0\r\n",Global_Data_Params.gc_ftp_server_name1, Global_Data_Params.gi_ftpserver_port1, Global_Data_Params.gc_ftp_user1, Global_Data_Params.gc_ftp_pwd1);
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+CFTPSLOGIN: 0", "ERROR", 15000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no == eAck){
+		return(1);
+	}
+	else
+		return(-1);
+
+}
+
+
+int ftp_send_data(){
+	int dest_in_count, timeout, lf_recd;
+	char msg_response[80];
+	int temp_cnt;
+
+	sprintf(gc_ftp_put_file, "./TWS_%s_%02d%02d%02d_%02d%02d00.kwd",
+			Global_Data_Params.gc_station_id,
+			(xPresent_Date_Time.year%2000),
+			xPresent_Date_Time.month,
+			xPresent_Date_Time.date,
+			xPresent_Date_Time.hour,
+			(xPresent_Date_Time.minute/Global_Data_Params.gi_log_interval)*Global_Data_Params.gi_log_interval);
+
+	sprintf(gprs_xmit_buf,"AT+CFTPSPUT=\"%s\"\r\n",gc_ftp_put_file);
+
+	gprs_xmit_ptr = gprs_xmit_buf;
+	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+	vTaskDelay(25 / portTICK_RATE_MS);	// wait a while for transmission to take place
+	vTaskDelay(5 / portTICK_RATE_MS);
+
+	dest_in_count = 0;
+	msg_response[0] = 0;
+	timeout = 15000/10;
+	while(( (lf_recd = getline((char *)0x2007c000, msg_response, &gprs_recv_in_cnt, &gprs_recv_out_cnt,
+			&dest_in_count, RECVBUF_SIZE, (int) *(SIMXFERRES))) != 1) &&(timeout)) {
+		vTaskDelay(10 / portTICK_RATE_MS);
+		timeout--;
+	}
+
+	vTaskDelay(2 / portTICK_RATE_MS);
+
+	if(lf_recd){
+		strcat(ftp_buff, "\032");	// CTRL+Z
+		vTaskDelay(2 / portTICK_RATE_MS);
+
+		//	temp_cnt = strlen(ftp_buff);
+		response_no=Send_And_Check_Gprs(ftp_buff, "+CFTPSPUT: 0", "ERROR", 40000);
+		if(response_no == eAck)
+			ftp_status = 1;
+		else
+			ftp_status = 0;
+
+		sprintf(gprs_xmit_buf,"AT+CFTPSSTOP\r\n");
+		response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 5000);
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+
+		sprintf(gprs_xmit_buf,"AT+CFTPSLOGOUT\r\n");
+		response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 5000);
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+
+
+	}
+	else
+		ftp_status = 0;
+
+}
+
+
+int connect_http1(){
+
+	sprintf(gprs_xmit_buf,"AT+CGSOCKCONT=1,\"IP\", \"%s\"\r\n",gc_apn_str);
+	//sprintf(gprs_xmit_buf,"AT+CGDCONT=1,\"IP\",\"%s\"\r\n",gc_apn_str);
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 5000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	sprintf(gprs_xmit_buf,"AT+CSOCKSETPN=1\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 5000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	sprintf(gprs_xmit_buf,"AT+CIPMODE=0\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "OK", "ERROR", 8000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	sprintf(gprs_xmit_buf,"AT+NETOPEN\r\n");
+	//sprintf(gprs_xmit_buf,"AT+NETOPEN\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+NETOPEN: 0", "ERROR", 25000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no != eAck){
+		return(-1);
+	}
+
+	sprintf(gprs_xmit_buf,"AT+IPADDR\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+IPADDR:", "ERROR", 8000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	if(response_no == eAck){
+		return(1);
+	}
+	else
+		return(-1);
+
+	/*	sprintf(gprs_xmit_buf,"AT+CIPOPEN=0,\"TCP\",\"%s\",%d\r\n",Global_Data_Params.gc_http_server_name1, Global_Data_Params.gi_http_server_port1);
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+CIPOPEN: 0,0", "ERROR", 8000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	 */
+}
+
+
+
+int http_send_data(){
+	// serverset is not used presently
+
+	//	char SIMXFERRES[]=">";
+	char temp_rec[96];
+	char http_data[300];
+	char http_response[300];
+	int i, lf_recd, timeout, dest_in_count,http_xfer_result;
+	char *matching_ptr;
+	char msg_response[50];
+
+	char *gprs_months[12] = {"Jan", "Feb", "Mar", "Apr",
+			"May", "Jun", "Jul", "Aug",
+			"Sep", "Oct", "Nov", "Dec" };
+	char gprs_new_mon[4], gprs_new_day[5];
+	int gprs_month_no;
+
+
+	sprintf(gprs_xmit_buf,"AT+CIPOPEN=0,\"TCP\",\"%s\",%d\r\n",Global_Data_Params.gc_http_server_name1, Global_Data_Params.gi_http_server_port1);
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+CIPOPEN: 0,0", "ERROR", 8000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+
+	sprintf(gprs_xmit_buf,"AT+CIPSEND=0,\r\n");
+
+	gprs_xmit_ptr = gprs_xmit_buf;
+	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+	vTaskDelay(5 / portTICK_RATE_MS);	// wait a while for transmission to take place
+
+	dest_in_count = 0;
+	msg_response[0] = 0;
+	timeout = 15000/10;
+	while(( (lf_recd = getline((char *)0x2007c000, msg_response, &gprs_recv_in_cnt, &gprs_recv_out_cnt,
+			&dest_in_count, RECVBUF_SIZE, (int) *(SIMXFERRES))) != 1) &&(timeout)) {
+		vTaskDelay(10 / portTICK_RATE_MS);
+		timeout--;
+	}
+	vTaskDelay(2 / portTICK_RATE_MS);
+	vTaskDelay(2 / portTICK_RATE_MS);
+
+	//	strcpy(temp_rec, "stn_id=00001920&rec_time=2020-12-11,14:05&rainfall=0&signal=-085&key=sit1040&bat_volt=14.32");
+
+	/*
+	 * Http headers
+	 * Line 1:	POST link HTTP/1.1\r\n
+	 * Line 2:	Host: server\r\n
+	 * Line 3:	Content-Type: application/x-www-form-urlencoded\r\n
+	 * Line 4:	Content-Length: len\r\n
+	 * Line 5:	\r\n
+	 * Line 6:	http data from log task
+	 *
+	 */
+	//strcpy(http_data, "POST /weather_info/data_upload/trg_data HTTP/1.1\r\n");
+	sprintf(http_data, "POST %s HTTP/1.1\r\n", Global_Data_Params.gc_http_link1);
+	//strcat(http_data, "Host: www.spatika.net\r\n");
+	sprintf(http_data, "%sHost: %s\r\n",http_data,Global_Data_Params.gc_http_server_name1);
+	strcat(http_data, "Content-Type: application/x-www-form-urlencoded\r\n");
+	sprintf(http_data, "%sContent-Length: %d\r\n\r\n", http_data, strlen(gc_http_data));
+
+	strcat(http_data, gc_http_data);
+
+	strcat(http_data, "\032");	// CTRL+Z
+
+	// send the data and wait for the response
+	for(i=0; i<sizeof(http_response); i++)
+		http_response[i]=0;
+	gprs_xmit_ptr = http_data;
+	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+	vTaskDelay(10 / portTICK_RATE_MS);	// wait a while for transmission to take place
+	dest_in_count = 0;
+	vTaskDelay(2 / portTICK_RATE_MS);
+	http_xfer_result = eXfer_In_Progress;
+
+	http_response[dest_in_count]=0;
+	//sim900 30000/2
+	for(timeout=3000; (timeout>0) && (http_xfer_result == eXfer_In_Progress); timeout--){
+		//	for(timeout=3000; (timeout>0) && (http_xfer_result == eXfer_In_Progress); timeout--){
+
+		while(( (lf_recd = getline((char *)0x2007c000, http_response, &gprs_recv_in_cnt, &gprs_recv_out_cnt,
+				&dest_in_count, RECVBUF_SIZE, LINE_FEED)) != 1) &&(timeout)) {
+			vTaskDelay(10 / portTICK_RATE_MS); //sizeof(gprs_recv_buf)
+			timeout--;
+		}
+
+
+		if(lf_recd){
+			lf_recd = 0;
+			if((matching_ptr = look_for_str(http_response, "Date:")) != 0 ){
+				//Date: Wed, 18 Jul 2012 05:52:39 GMT
+				sscanf(matching_ptr, "Date: %[^,], %d %s %d %d:%d", &gprs_new_day,
+						&gprs_new_date, &gprs_new_mon, &gprs_new_year, &gprs_new_hour, &gprs_new_minute);
+				for(gprs_month_no = 0; gprs_month_no < 12; gprs_month_no++)
+					if(strcmp(gprs_months[gprs_month_no], gprs_new_mon) == 0)
+						break;
+				if (gprs_month_no < 12){
+					gprs_new_month = gprs_month_no+1;
+					gprs_new_minute += 30;
+					if(gprs_new_minute >= 60){
+						gprs_new_minute %= 60;
+						gprs_new_hour += 6;
+					}
+					else
+						gprs_new_hour += 5;
+					if(gprs_new_hour >= 24){
+						gprs_new_hour %= 24;
+						Next_Date(&gprs_new_date, &gprs_new_month, &gprs_new_year);
+					}
+
+					gprs_server_date_Ok = 1;
+				}
+			}
+			if((matching_ptr = look_for_str(http_response, "Success")) != 0 ){
+				http_xfer_result = eXfer_Success;
+				http_status  = 1;
+				gi_http_error = 0;
+				//printf("Http Success\r\n");
+			}
+			else if ((matching_ptr = look_for_str(http_response, "Rejected")) != 0 ){
+				http_xfer_result = eXfer_Rejected;
+				gi_http_error = 1;
+				//printf("Http Rejected\r\n");
+			}
+			else if ((matching_ptr = look_for_str(http_response, "Invalid")) != 0 ){
+				http_xfer_result = eXfer_Fail;
+				gi_http_error = 1;
+				//printf("Http Invalid\r\n");
+			}
+
+			else
+				vTaskDelay(10 / portTICK_RATE_MS);
+		}
+	}
+
+	// if the response is OK, return
+	if (timeout)
+		return(http_xfer_result);
+	else{
+		//printf("Http Timeout");
+		gprs_timeout_occurred = 1;
+		return(eXfer_Tmo);
+		gi_http_error = 1;
+	}
+}
+
+
+
+
+int send_message(char *gsm_no, char *msg_text)
+{
+	int lf_recd, dest_in_count, timeout, msg_end;
+	char send_msg_cmd[32], msg_response[256], msg_str[256], *in_ptr, *out_ptr;
+
+
+	in_ptr = msg_text;
+
+	msg_end = 0;
+
+	// first give send sms command
+	response_no	=  Send_And_Check_Gprs("\r\nAT+CMGF=1\r\n", "OK", "ERROR", 5000);
+	vTaskDelay(1000 / portTICK_RATE_MS);
+	gi_dota_error = 0;
+	sprintf(send_msg_cmd, "AT+CMGS=\"%s\"\r", gsm_no);
+	gprs_xmit_ptr = send_msg_cmd;
+	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+	vTaskDelay(20 / portTICK_RATE_MS);	// wait a while for transmission to take place
+	if(gi_dota_error)
+		return(eNack);
+	dest_in_count = 0;
+	msg_response[0] = 0;
+	timeout = 50000/10;
+	while(( (lf_recd = getline((char *)0x2007c000, msg_response, &gprs_recv_in_cnt, &gprs_recv_out_cnt,
+			&dest_in_count, RECVBUF_SIZE, '>')) != 1) &&(timeout)) {
+		vTaskDelay(10 / portTICK_RATE_MS);
+		timeout--;
+	}
+
+	if(!timeout)
+		return(eNack);
+
+	while(!msg_end){
+		out_ptr = msg_str;
+		while((*in_ptr != '\n') && (*in_ptr != 0) && (*in_ptr != '\032'))
+			*out_ptr++ = *in_ptr++;
+
+		if ((*in_ptr == 0) || (*in_ptr == '\032'))
+			msg_end = 1;
+		else
+			*out_ptr++ = *in_ptr++;
+
+		*out_ptr = 0;
+
+		// now let us send the message and wait for '>' everyline
+
+		if(msg_str[0] != 0){
+			gprs_xmit_ptr = msg_str;
+			UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+			vTaskDelay(20 / portTICK_RATE_MS);	// wait a while for transmission to take place
+			dest_in_count = 0;
+			msg_response[0] = 0;
+
+			//timeout = 30000/10;
+			//timeout = 300/10;        // for sim800
+			timeout = 50;
+
+			gi_dota_error = 0;
+			//printf("%s", msg_str);
+			while(( (lf_recd = getline((char *)0x2007c000, msg_response, &gprs_recv_in_cnt, &gprs_recv_out_cnt,
+					&dest_in_count, RECVBUF_SIZE, '>')) != 1) &&(timeout)) {
+				vTaskDelay(10 / portTICK_RATE_MS);
+				timeout--;
+				if(gi_dota_error)
+					return(eNack);
+
+			}
+		}
+	}
+	vTaskDelay(100 / portTICK_RATE_MS);
+	response_no = Send_And_Check_Gprs("\032", "OK", "ERROR", 5000);
+	vTaskDelay(300 / portTICK_RATE_MS);
+
+	return(response_no);
+}
+
+
+
+void disconnect_http1(void){
+
+	sprintf(gprs_xmit_buf,"AT+CIPCLOSE=0\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+CIPCLOSE: 0,0", "ERROR", 5000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+
+	sprintf(gprs_xmit_buf,"AT+NETCLOSE\r\n");
+	response_no =  Send_And_Check_Gprs(gprs_xmit_buf, "+NETCLOSE: 0", "ERROR", 8000);
+	vTaskDelay(10 / portTICK_RATE_MS);
+
+
+}
+
+
+int ftp_dota1(void)
+{
+	int xfr_res, bytes_recd, stat, reply, code_start;
+	int store_in_sdc;
+	char *matching_ptr;
+
+	//AT+CFTPSGET="tws_sms.hex",0
+
+	//char xmit_str[] = "AT+CFTPSGET=2,1024\r\n";	// to get 1024 bytes everytime
+	char temp_buff[60];
+
+	int lf_recd, response_in_count, send_cmd, timeout;
+
+	send_cmd = 1;
+	xfr_res = eXfer_Fail;
+	gi_dota_error = 0;
+	store_in_sdc = 0;
+
+	sprintf(temp_buff,"AT+CFTPSGET=\"%s\",0\r\n",gc_dota_file_name);
+
+	//sprintf(gprs_xmit_buf,"AT+CGDCONT=1,\"IP\",\"%s\"\r\n",gc_apn_str);
+
+
+	gprs_xmit_ptr = temp_buff;
+	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+	vTaskDelay(20 / portTICK_RATE_MS);	// wait a while for transmission to take place
+
+
+	while(1){
+		lf_recd = 0;
+		response_in_count = 0;
+		bytes_recd = 0;
+		//	while(send_cmd == 0){
+		gprs_response[0] = 0;
+		timeout = 15000;
+		while(( (lf_recd = getline((char *)0x2007c000, gprs_response, &gprs_recv_in_cnt, &gprs_recv_out_cnt,
+				&response_in_count, RECVBUF_SIZE, ',')) != 1) &&(timeout)) {
+			//	&response_in_count, RECVBUF_SIZE, LINE_FEED)) != 1) &&(timeout)) {
+			vTaskDelay(10 / portTICK_RATE_MS); //sizeof(gprs_recv_buf)
+			timeout--;
+		}
+
+		/*	while((0 != (matching_ptr = look_for_str(gprs_response, "+CFTPSGET: DATA,"))) && (timeout)){
+			lf_recd =1;
+			vTaskDelay(10 / portTICK_RATE_MS); //sizeof(gprs_recv_buf)
+			timeout--;
+		}*/
+
+		if((!timeout)||(gi_dota_error)){
+			xfr_res = eXfer_Fail;
+			return xfr_res;
+		}
+
+		if(lf_recd){
+			//+CFTPSGET: DATA,1024
+			if(0 != (matching_ptr = look_for_str(gprs_response, "+CFTPSGET: DATA,"))){
+				sscanf(gprs_response, "+CFTPSGET: DATA,%d", &bytes_recd);
+				if(bytes_recd>0){
+					code_start = gprs_recv_out_cnt;
+					store_in_sdc = 0;
+
+
+					if((code_start+bytes_recd)<=RECVBUF_SIZE){
+						// we are within the boundary. just write
+						XITC_Gprs_Disk_Fw.buf_ptr = (char *)(0x2007c000+code_start);
+						XITC_Gprs_Disk_Fw.count = bytes_recd;
+						XITC_Gprs_Disk_Fw.command = eFTP_Write_Buf;
+						XITC_Gprs_Disk_Fw.signal = 1;
+						while(XITC_Gprs_Disk_Fw.signal)
+							vTaskDelay(1 / portTICK_RATE_MS);
+					}
+					else{
+						// take care of boundary. first write a fewer bytes till the boundary is reached;
+						// them from the top, the balance bytes
+						XITC_Gprs_Disk_Fw.buf_ptr = (char *)(0x2007c000+code_start);
+						XITC_Gprs_Disk_Fw.count = (RECVBUF_SIZE-code_start);
+						XITC_Gprs_Disk_Fw.command = eFTP_Write_Buf;
+						XITC_Gprs_Disk_Fw.signal = 1;
+						while(XITC_Gprs_Disk_Fw.signal)
+							vTaskDelay(1 / portTICK_RATE_MS);
+
+
+
+						// write bytes_recd-(RECV_BUF_SIZE-gprs_recv_out_count) no of bytes from the top i.e. from (0x2007c000)
+						XITC_Gprs_Disk_Fw.buf_ptr = (char *)(0x2007c000);
+						XITC_Gprs_Disk_Fw.count = (bytes_recd - (RECVBUF_SIZE-code_start));
+						XITC_Gprs_Disk_Fw.command = eFTP_Write_Buf;
+						XITC_Gprs_Disk_Fw.signal = 1;
+						while(XITC_Gprs_Disk_Fw.signal)
+							vTaskDelay(1 / portTICK_RATE_MS);
+
+					}
+					bytes_recd = 0;
+
+				}
+			}
+
+			else if(0 != (matching_ptr = look_for_str(gprs_response, "+CFTPSGET: 0"))){
+				xfr_res = eXfer_Success;
+				return xfr_res;
+			}
+
+			/*		else if (0 != (matching_ptr = look_for_str(gprs_response,"FTPGET: 1,"))){
+					sscanf(gprs_response, "+FTPGET: 1,%d", &stat);
+					if(stat==0){
+						xfr_res = eXfer_Success;
+						return xfr_res;
+					}
+					else if(64==stat){
+						xfr_res = eXfer_Fail;
+						return xfr_res;
+					}
+					else if(1==stat){
+						send_cmd = 1;
+						break;
+					}
+				}*/
+
+
+			//else if (0 != (matching_ptr = look_for_str(gprs_response,"OK"))){
+			if(store_in_sdc == 1){
+				store_in_sdc = 0;
+				if(bytes_recd>0){
+					// here you set up command for writing onto disk
+
+					if((code_start+bytes_recd)<=RECVBUF_SIZE){
+						// we are within the boundary. just write
+						XITC_Gprs_Disk_Fw.buf_ptr = (char *)(0x2007c000+code_start);
+						XITC_Gprs_Disk_Fw.count = bytes_recd;
+						XITC_Gprs_Disk_Fw.command = eFTP_Write_Buf;
+						XITC_Gprs_Disk_Fw.signal = 1;
+						while(XITC_Gprs_Disk_Fw.signal)
+							vTaskDelay(1 / portTICK_RATE_MS);
+					}
+					else{
+						// take care of boundary. first write a fewer bytes till the boundary is reached;
+						// them from the top, the balance bytes
+						XITC_Gprs_Disk_Fw.buf_ptr = (char *)(0x2007c000+code_start);
+						XITC_Gprs_Disk_Fw.count = (RECVBUF_SIZE-code_start);
+						XITC_Gprs_Disk_Fw.command = eFTP_Write_Buf;
+						XITC_Gprs_Disk_Fw.signal = 1;
+						while(XITC_Gprs_Disk_Fw.signal)
+							vTaskDelay(1 / portTICK_RATE_MS);
+
+
+
+						// write bytes_recd-(RECV_BUF_SIZE-gprs_recv_out_count) no of bytes from the top i.e. from (0x2007c000)
+						XITC_Gprs_Disk_Fw.buf_ptr = (char *)(0x2007c000);
+						XITC_Gprs_Disk_Fw.count = (bytes_recd - (RECVBUF_SIZE-code_start));
+						XITC_Gprs_Disk_Fw.command = eFTP_Write_Buf;
+						XITC_Gprs_Disk_Fw.signal = 1;
+						while(XITC_Gprs_Disk_Fw.signal)
+							vTaskDelay(1 / portTICK_RATE_MS);
+
+					}
+					bytes_recd = 0;
+				}
+				gprs_recv_out_cnt = gprs_recv_in_cnt;
+			}
+		}
+		//	}
+	}
+}
+
+
+void select_sim_0(void){
+	GPIO_ClearValue(STATUS_KEY_PORT, STATUS_KEY_MASK);
+	vTaskDelay(2000 / portTICK_RATE_MS);
+
+}
+
+void select_sim_1(void){
+	GPIO_SetValue(STATUS_KEY_PORT, STATUS_KEY_MASK);
+	vTaskDelay(2000 / portTICK_RATE_MS);
+
+}
+
+void prepare_present_rec_for_http_sms(void){
+
+	if(gi_signal_level > 0)
+		get_signal_level();
+
+//	cumulative_rf(xLast_Rec_15min_Date_Time.date, xLast_Rec_15min_Date_Time.month, xLast_Rec_15min_Date_Time.year, xLast_Rec_15min_Date_Time.hour, xLast_Rec_15min_Date_Time.minute);
+//	vTaskDelay(1 / portTICK_RATE_MS);
+
+	bat_volt1 = ((((float)(days_sector[present_sector_no-2]->samples[present_sample_no].battery1) * 3.3/4095)/0.138));
+
+	Packet_Data.temperature = ((float)days_sector[present_sector_no-2]->samples[present_sample_no].temperature/65536) * 165 - 40;
+
+	Packet_Data.humidity = ((float)days_sector[present_sector_no-2]->samples[present_sample_no].humidity/65534) * 100;
+
+	Packet_Data.wind_dir = ((int)(days_sector[present_sector_no-2]->samples[present_sample_no].wind_direction * 0.088)) % 360;		// 360/4095 = 0.088
+
+	Packet_Data.avg_ws = ((float)(days_sector[present_sector_no-2]->samples[present_sample_no].wind_speed / 20)) / days_sector[present_sector_no-2]->samples[present_sample_no].ws_sec_cnt;
+
+	//	"stn_no=%s&rec_time=%04d-%02d-%02d,%02d:%02d&key=%s&rainfall=%03d.%1d&temp=%c%.1f&humid=%.1f&w_speed=%.1f&w_dir=%03d&signal=%04d&bat_volt=%.2f",
+
+	if((Packet_Data.temperature < 0) || (Packet_Data.temperature >50))
+		Packet_Data.temperature = 0;
+
+	if((Packet_Data.humidity < 0) || (Packet_Data.humidity >100))
+		Packet_Data.humidity = 100;
+
+	sprintf(gc_http_data, "stn_no=%s&rec_time=%04d-%02d-%02d,%02d:%02d&temp=%c%.1f&humid=%.1f&w_speed=%.1f&w_dir=%03d&signal=%04d&key=%s&bat_volt=%02d.%02d",
+			Global_Data_Params.gc_station_id,
+			days_sector[present_sector_no-2]->year,
+			days_sector[present_sector_no-2]->month,
+			days_sector[present_sector_no-2]->date,
+			days_sector[present_sector_no-2]->samples[present_sample_no].hour,
+			days_sector[present_sector_no-2]->samples[present_sample_no].minute,
+			plus_minus_sym,
+			Packet_Data.temperature,
+			Packet_Data.humidity,
+			Packet_Data.avg_ws,
+			Packet_Data.wind_dir,
+			gi_signal_level,
+			Global_Data_Params.gc_http_key1,
+			((int)bat_volt1 * 100)/100, (int)(bat_volt1 * 100) % 100);
+
+	h_year = days_sector[present_sector_no-2]->year;
+	h_month = days_sector[present_sector_no-2]->month;
+	h_date = days_sector[present_sector_no-2]->date;
+	h_hour = days_sector[present_sector_no-2]->samples[present_sample_no].hour;
+	h_minute = days_sector[present_sector_no-2]->samples[present_sample_no].minute;
+
+	//sprintf(status_response, "%s,%s,WS-DATA,%s,%04d-%02d-%02dT%02d:%02d,Y,%03d.%d,%c%.1f,%.1f,%.1f,%d,%03d.%d,%s,%.2f,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+
+	sprintf(gc_sms_data, "%s,%s,WS-DATA,%s,%04d-%02d-%02dT%02d:%02d,Y,%c%.1f,%.1f,%.1f,%d,%d,%.2f", //,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+
+			Global_Data_Params.gc_network_name,
+			Global_Data_Params.gc_station_type,
+			Global_Data_Params.gc_station_id,
+			days_sector[present_sector_no-2]->year,
+			days_sector[present_sector_no-2]->month,
+			days_sector[present_sector_no-2]->date,
+			days_sector[present_sector_no-2]->samples[present_sample_no].hour,
+			days_sector[present_sector_no-2]->samples[present_sample_no].minute,
+			plus_minus_sym,
+			Packet_Data.temperature,
+			Packet_Data.humidity,
+			Packet_Data.avg_ws,
+			Packet_Data.wind_dir,
+			gi_signal_level,
+			bat_volt1
+	);
+
+	vTaskDelay(1 / portTICK_RATE_MS);
+
+}
+
+
+char *mv2endof_str(char* src, char* match, int len)
+{
+
+	char *s, *m;
+
+	s = src;
+	m = match;
+	int found = 0;
+
+	while(*s && len){
+		if(*s == *m){
+			s++;
+			m++;
+			if(*m == 0){
+				found = 1;
+				break;
+			}
+		}
+		else{
+			s++;
+			m = match;
+		}
+		len--;
+	}
+
+	if (!found)
+		s = -1;
+	return (s);
+
+}
+
+void vGprs_Task( void *pvParameters){
+
+	char c, gprs_recv_loc_buf[300];
+	int  gprs_loc_buf_in_cnt;
+	int gprs_msg_processed_date;
+	int lf_recd;
+	int response_in_count;
+
+	int msg_no;
+	int iCountTemp;
+	int xfer_result;
+	int http_server_connected;
+	int ftp_server_connected;
+
+	int year1, month1, date1, hour1, minute1, second1;
+
+	char ftp_rec[64];
+	float f_bat_volt;
+	int ftp_rf;
+	int dd, mm,yy, sector_no;
+	int found;
+
+	xfer_result = 0;
+	gi_sig_timeout = 0;
+	gprs_server_date_Ok = 0;
+	gps_found = 0;
+	file_saved = 0;
+
+	vTaskDelay(100 / portTICK_RATE_MS);
+	ptr_RAM2 = (char *)0x2007c000;
+	for(iCountTemp=0; iCountTemp<1024*8; iCountTemp++){
+		*(ptr_RAM2+iCountTemp) = 0xFF;
+	}
+	for(;iCountTemp<1024*12; iCountTemp++){
+		*(ptr_RAM2+iCountTemp) = iCountTemp%256;
+	}
+
+
+	*((char *)0x2007c000) = 0;
+	gprs_recv_loc_buf[0] = 0;
+	gprs_loc_buf_in_cnt = 0;
+
+	gprs_timeout_occurred = 0;
+	gi_sim_state = 0;
+	gi_sim_reg = 0;
+	gi_dota_error = 0;
+	gi_gps_error = 0;
+	gi_http_error = 0;
+	gprs_msg_processed_date = 0;
+
+	gprs_server_date_Ok = 0;
+	ftp_mode = 0;
+	http_server_connected = 0;
+	ftp_server_connected = 0;
+	http_status = 0;
+	ftp_status = 0;
+	ftp_line_cnt = 0;
+	ftp_rec_no = 0;
+	get_gps = 0;
+
+	// init pins and then UART meant for GPRS
+	define_gprs_uart_pins((LPC_UART_TypeDef*) GPRS_UART);
+	vTaskDelay(300 / portTICK_RATE_MS);
+	init_gprs_uart((LPC_UART_TypeDef*) GPRS_UART);
+	vTaskDelay(300 / portTICK_RATE_MS);
+
+	for(msg_no = 0; msg_no < MAX_NO_OF_MSGS; msg_no++)
+		message_recd[msg_no] = 0;
+
+	while(!memory_task_started)
+		vTaskDelay(100 / portTICK_RATE_MS);
+
+	select_sim_0();  //select default sim for simcard holder 1
+	vTaskDelay(2000 / portTICK_RATE_MS);
+
+	//initial delay for module
+	vTaskDelay(15000 / portTICK_RATE_MS);
+
+	check_basic_commands();
+	vTaskDelay(200 / portTICK_RATE_MS);
+
+	check_sim_cpin();
+	vTaskDelay(200 / portTICK_RATE_MS);
+
+	get_signal_level();
+	vTaskDelay(200 / portTICK_RATE_MS);
+
+	if(gi_sim_state != 1){
+		select_sim_1();  //select secondary  sim for simcard holder 2
+		vTaskDelay(2000 / portTICK_RATE_MS);
+
+		vTaskDelay(10000 / portTICK_RATE_MS);
+
+		check_basic_commands();
+		vTaskDelay(200 / portTICK_RATE_MS);
+
+		check_sim_cpin();
+		vTaskDelay(200 / portTICK_RATE_MS);
+
+		get_signal_level();
+		vTaskDelay(200 / portTICK_RATE_MS);
+
+		vTaskDelay(2000 / portTICK_RATE_MS);
+		if(gi_sim_state == 1)
+			Global_Data_Params.gi_sim_select = 1;
+	}
+	else
+		Global_Data_Params.gi_sim_select = 0;
+
+
+	check_sim_registration();
+	vTaskDelay(200 / portTICK_RATE_MS);
+
+	get_apn();
+	vTaskDelay(200 / portTICK_RATE_MS);
+
+
+	for(;;){
+
+		taskENTER_CRITICAL();
+		gi_wdt_task_ok_stat |= WDT_GPRS_OK;
+		taskEXIT_CRITICAL();
+		vTaskDelay(1000 / portTICK_RATE_MS);
+
+		if(process_msgs == 1){
+			for(msg_no=1; msg_no<=MAX_NO_OF_MSGS; msg_no++){
+				GPRS_Done.sms = 0;
+				process_msg(msg_no);
+				message_recd[msg_no] = 0;
+				GPRS_Done.sms = 1;
+				process_msgs = 2;
+			}
+			gprs_msg_processed_date = xPresent_Date_Time.date;
+		}
+
+
+		/*	if(get_gps_time == 1){
+			get_gps_info();
+			get_gps_time = 0;
+
+		}*/
+
+		//		get_gprs_time = 1;
+
+		if((get_gprs_time == 1) && (gi_sim_state == 1)){
+
+			//	Send_And_Check_Gprs("\r\nAT+CLTS=1\r\n", "OK", "ERROR", 6000);	// Get local timestamp
+			Send_And_Check_Gprs("\r\nAT+CTZU=1\r\n", "OK", "ERROR", 6000);	// Get local timestamp
+			Send_And_Check_Gprs("\r\nAT+CTZR=1\r\n", "OK", "ERROR", 6000);	// Get local timestamp
+
+			vTaskDelay(50 / portTICK_RATE_MS);
+
+			//		Send_And_Check_Gprs("\r\nAT+CLTS=1;&W\r\n", "OK", "ERROR", 2000);
+
+			response_no = Send_And_Check_Gprs("\r\nAT+CCLK?\r\n", "+CCLK", "ERROR", 6000);	//
+			vTaskDelay(500 / portTICK_RATE_MS);
+
+			if(response_no == eAck){
+				//"+CCLK: \"17/03/15,13:41:19+22\"\r\n",
+				sscanf(gprs_response, "+CCLK: \"%d/%d/%d,%d:%d:%d", &year1,&month1,&date1,&hour1,&minute1,&second1);
+
+				year1 += 2000;
+				xDateTime_def xDateTime_Gprs;
+				xDateTime_Gprs.date 	= date1;
+				xDateTime_Gprs.month 	= month1;
+				xDateTime_Gprs.year 	= year1;
+				xDateTime_Gprs.hour 	= hour1;
+				xDateTime_Gprs.minute 	= minute1;
+
+				if(gps_found == 1){
+					if((xDateTime_Gprs.date == GPS.date) && (xDateTime_Gprs.month == GPS.month) && (xDateTime_Gprs.year == GPS.year)
+							&& (xDateTime_Gprs.hour == GPS.hour)){
+						xSet_Date_Time.date		= xDateTime_Gprs.date;
+						xSet_Date_Time.month	= xDateTime_Gprs.month;
+						xSet_Date_Time.year		= xDateTime_Gprs.year;
+						xSet_Date_Time.hour		= xDateTime_Gprs.hour;
+						xSet_Date_Time.minute	= xDateTime_Gprs.minute ;
+						xSet_Date_Time.second = 10;
+
+						set_time_to_rtc = 1; //flag is set to new time for LPC845
+
+						//erase_data_sector = 1; //flag is set to erase all data sectors
+					}
+				}
+
+				else{
+
+					if((xDateTime_Gprs.date > 0) && (xDateTime_Gprs.date <= 31) &&
+							(xDateTime_Gprs.month > 0) && (xDateTime_Gprs.month <= 12) &&
+							(xDateTime_Gprs.year >= 2020) && (xDateTime_Gprs.year <= 2079)){
+
+						xSet_Date_Time.date		= xDateTime_Gprs.date;
+						xSet_Date_Time.month	= xDateTime_Gprs.month;
+						xSet_Date_Time.year		= xDateTime_Gprs.year;
+						xSet_Date_Time.hour		= xDateTime_Gprs.hour;
+						xSet_Date_Time.minute	= xDateTime_Gprs.minute ;
+						xSet_Date_Time.second = 10;
+
+						set_time_to_rtc = 1; //flag is set to new time for LPC845
+						//erase_data_sector = 1; //flag is set to erase all data sectors
+						auto_time_set = 1;
+					}
+				}
+			}
+			get_gprs_time = 0;
+		}
+
+
+
+		if(wait_for_sms_process == 1){
+			if((gi_sim_state == 1) && (gi_sim_reg == 1)){
+				for(msg_no=1; msg_no<=MAX_NO_OF_MSGS; msg_no++){
+					process_msg(msg_no);
+					message_recd[msg_no] = 0;
+					process_msgs = 0;
+				}
+			}
+			wait_for_sms_process = 2;
+		}
+
+		if(gi_data_ready_for_report == 1){
+
+			gi_data_ready_for_report = 0;
+
+			prepare_present_rec_for_http_sms();
+			vTaskDelay(10 / portTICK_RATE_MS);
+
+			//	if((http_server_connected == 0) && (gi_sim_state == 1)){
+			if((http_server_connected == 0) && (gi_sim_state == 1) && (gi_sim_reg == 1)){
+
+				http_server_connected = connect_http1();
+				vTaskDelay(100 / portTICK_RATE_MS);
+			}
+
+			response_no == eNack;
+
+			if(http_server_connected == 1){
+				response_no = http_send_data();
+				vTaskDelay(100 / portTICK_RATE_MS);
+			}
+
+			if(response_no ==  eXfer_Success){
+				http_status = 1;		//update http_flag in flash
+
+				gi_present_error = 0;  // clear present error
+				gi_log_date	  = h_date;
+				gi_log_month  = h_month;
+				gi_log_year	  = h_year;
+				gi_log_hour	  = h_hour;
+				gi_log_minute = h_minute;
+				// store last logged date time in params file
+				XITC_Gprs_Disk.command = eSave_Params;
+				XITC_Gprs_Disk.signal = 1;
+				while(XITC_Gprs_Disk.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+			}
+			else{
+				// increment the net error count and store
+				http_status = 0;
+				gi_present_error++;
+				gi_net_error++;
+				save_err_det();	//save error details in SDC
+				vTaskDelay(100 / portTICK_RATE_MS);
+			}
+
+			//Sync time
+			if(gprs_server_date_Ok){
+				if((gprs_new_year != xPresent_Date_Time.year) || (gprs_new_month != xPresent_Date_Time.month) ||
+						(gprs_new_date != xPresent_Date_Time.date) ||  (gprs_new_hour != xPresent_Date_Time.hour)){
+					xSet_Date_Time.date		= gprs_new_date;
+					xSet_Date_Time.month	= gprs_new_month;
+					xSet_Date_Time.year		= gprs_new_year;
+					xSet_Date_Time.hour		= gprs_new_hour;
+					xSet_Date_Time.minute	= gprs_new_minute;
+					xSet_Date_Time.second = 10;
+
+					set_time_to_rtc = 1;
+					vTaskDelay(100 / portTICK_RATE_MS);
+				}
+			}
+
+
+			///////////////////DOTA
+
+
+			//		gi_start_dota = 1;
+
+			if(gi_start_dota == 1){
+
+				if(gi_disk_ok == 1){
+					if((gi_sim_state == 1) && (gi_sim_reg == 1)){
+						response_no = connect_ftp2();
+						vTaskDelay(200 / portTICK_RATE_MS);
+
+						response_no = ftp_dota();
+						//ftp_dota();
+						vTaskDelay(200 / portTICK_RATE_MS);
+
+						if(file_saved == 1){
+							gi_start_dota = 0;
+
+							XITC_Gprs_Disk.command = eCheck_Dota_File;
+							XITC_Gprs_Disk.signal = 1;
+							while(XITC_Gprs_Disk.signal)
+								vTaskDelay(100 / portTICK_RATE_MS);
+
+							XITC_Gprs_Disk.command = eSave_Params;
+							XITC_Gprs_Disk.signal = 1;
+							while(XITC_Gprs_Disk.signal)
+								vTaskDelay(100 / portTICK_RATE_MS);
+						}
+						else{
+							XITC_Gprs_Disk.command = eDelete_Dota_File;
+							XITC_Gprs_Disk.signal = 1;
+							while(XITC_Gprs_Disk.signal)
+								vTaskDelay(100 / portTICK_RATE_MS);
+						}
+					}
+				}
+				else{
+					gi_start_dota = 0;
+					sprintf(status_response, "SDC-Problem Firmware unable to update\r\n\032");
+
+					response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
+					vTaskDelay(100 / portTICK_RATE_MS);
+
+					XITC_Gprs_Disk.command = eSave_Params;
+					XITC_Gprs_Disk.signal = 1;
+					while(XITC_Gprs_Disk.signal)
+						vTaskDelay(100 / portTICK_RATE_MS);
+				}
+			}
+
+
+			/////////////////DOTA
+
+			//////////Check FTP for present day
+			if(http_status == 1)
+				ftp_rec_no = present_sample_no - 1;
+			else
+				ftp_rec_no = present_sample_no;
+
+			float f_temp, f_humid, f_ws;
+			int f_wd;
+
+			while(ftp_rec_no >= 0){
+				if((days_sector[present_sector_no-2]->samples[ftp_rec_no].http_status != 1) && (days_sector[present_sector_no-2]->samples[ftp_rec_no].ftp_status != 1) && ((days_sector[present_sector_no-2]->samples[ftp_rec_no].rf != 0xFFFF))){
+
+					//			cumulative_rf1(days_sector[present_sector_no-2]->date, days_sector[present_sector_no-2]->month, days_sector[present_sector_no-2]->year,
+					//					days_sector[present_sector_no-2]->samples[ftp_rec_no].hour, days_sector[present_sector_no-2]->samples[ftp_rec_no].minute);
+
+					//			vTaskDelay(1 / portTICK_RATE_MS);
+
+					//			ftp_rf = c_rainfall;
+					f_bat_volt = ((((float)(days_sector[present_sector_no-2]->samples[ftp_rec_no].battery1) * 3.3/4095)/0.138));
+
+					f_temp = ((float)days_sector[present_sector_no-2]->samples[ftp_rec_no].temperature/65536) * 165 - 40;
+
+					f_humid = ((float)days_sector[present_sector_no-2]->samples[ftp_rec_no].humidity/65534) * 100;
+
+					f_wd = ((int)(days_sector[present_sector_no-2]->samples[ftp_rec_no].wind_direction * 0.088)) % 360;		// 360/4095 = 0.088
+
+					f_ws = ((float)(days_sector[present_sector_no-2]->samples[ftp_rec_no].wind_speed / 20)) / days_sector[present_sector_no-2]->samples[ftp_rec_no].ws_sec_cnt;
+
+					//"%s;%04d-%02d-%02d,%02d:%02d;%c%02d.%1d;%03d.%1d;%02d.%1d;%03d;%04d;%02d.%02d\r\n",
+					sprintf(ftp_rec, "%s;%04d-%02d-%02d,%02d:%02d;%c%02d.%1d;%03d.%1d;%02d.%1d;%03d;%04d;%02d.%02d\r\n",
+							Global_Data_Params.gc_station_id,
+							days_sector[present_sector_no-2]->year,
+							days_sector[present_sector_no-2]->month,
+							days_sector[present_sector_no-2]->date,
+							days_sector[present_sector_no-2]->samples[ftp_rec_no].hour,
+							days_sector[present_sector_no-2]->samples[ftp_rec_no].minute,
+							plus_minus_sym,
+							((int)f_temp * 100)/100,(int)(f_temp * 10) % 10,
+							((int)f_humid * 100)/100, (int)(f_humid * 10) % 10,
+							((int)f_ws * 100)/100, (int)(f_ws * 10) % 10,
+							f_wd,
+							days_sector[present_sector_no-2]->samples[ftp_rec_no].signal,
+							((int)f_bat_volt * 100)/100, (int)(f_bat_volt * 100) % 100);
+
+					strcat(ftp_buff,ftp_rec);
+
+					ftp_flag[ftp_line_cnt] = ftp_rec_no;
+					ftp_line_cnt++;
+
+				}
+
+				ftp_rec_no--;
+				//	if((ftp_line_cnt > 20))
+				if((ftp_line_cnt > 19))
+					break;
+			}
+
+
+			if((ftp_line_cnt > 0) && (gi_sim_state == 1)){
+
+				if(gi_sim_reg == 1){
+					ftp_server_connected = connect_ftp1();
+					vTaskDelay(200 / portTICK_RATE_MS);
+				}
+
+				//response_no == eNack;
+
+				if(ftp_server_connected == 1)
+					ftp_send_data();
+
+				vTaskDelay(200 / portTICK_RATE_MS);
+
+			}
+
+			if(ftp_status == 1){
+				gi_present_error = 0;  // clear present error
+				gi_log_date	  = h_date;
+				gi_log_month  = h_month;
+				gi_log_year	  = h_year;
+				gi_log_hour	  = h_hour;
+				gi_log_minute = h_minute;
+				// store last logged date time in params file
+				XITC_Gprs_Disk.command = eSave_Params;
+				XITC_Gprs_Disk.signal = 1;
+				while(XITC_Gprs_Disk.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+			}
+
+
+			if((http_status == 0) && (ftp_status == 0)){
+
+				if(Global_Data_Params.gi_send_data_sms == 1){
+					sprintf(status_response,"%s,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+							gc_sms_data,
+							gi_log_year,
+							gi_log_month,
+							gi_log_date,
+							gi_log_hour,
+							gi_log_minute,
+							gi_present_error);
+
+					response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
+					vTaskDelay(100 / portTICK_RATE_MS);
+				}
+
+				if((xLast_Rec_15min_Date_Time.hour == 8) && (xLast_Rec_15min_Date_Time.minute == 30)){
+
+					auto_dump_date  = xLast_Rec_15min_Date_Time.date;
+					auto_dump_month = xLast_Rec_15min_Date_Time.month;
+					auto_dump_year	= xLast_Rec_15min_Date_Time.year;
+
+					XITC_Gprs_Disk.signal = 1;
+					XITC_Gprs_Disk.command = ePrepare_Auto_Dump;
+					while(XITC_Gprs_Disk.signal)
+						vTaskDelay(100 / portTICK_RATE_MS);
+					sprintf(dump_buf, "%s\032",dump_buf);
+					send_message(Global_Data_Params.gc_universal_gsm, dump_buf);
+				}
+				//	sleep_mode = 1;
+
+			}
+
+
+			if(firmware_updated == 1){
+				sprintf(status_response,"%s,%s,STATUS-C,%s,%04d-%02d-%02dT%02d:%02d,%s-%c,%d,%04d,%.2f,%s,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+						Global_Data_Params.gc_network_name,
+						Global_Data_Params.gc_station_type,
+						Global_Data_Params.gc_station_id,
+						xPresent_Date_Time.year,
+						xPresent_Date_Time.month,
+						xPresent_Date_Time.date,
+						xPresent_Date_Time.hour,
+						xPresent_Date_Time.minute,
+						Global_Data_Params.gc_version,
+						lpc845_ver,
+						Global_Data_Params.gi_report_interval,
+						gi_signal_level,
+						bat_volt,
+						(gi_disk_ok ? "SDC-OK" : "SDC-FAIL"),
+						gi_log_year,
+						gi_log_month,
+						gi_log_date,
+						gi_log_hour,
+						gi_log_minute,
+						gi_present_error
+				);
+				response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
+				vTaskDelay(100 / portTICK_RATE_MS);
+				firmware_updated = 0;
+			}
+
+
+			if((http_status == 1) || (ftp_status == 1))
+				update_present_day_flag = 1;
+
+			sleep_mode = 1;
+		}
+
+		/*
+		if(check_prev_day_ftp == 1){
+
+			check_prev_day_ftp = 0;
+
+			ftp_rec_no = 95;
+
+			dd = rf_close_date;
+			mm = rf_close_month;
+			yy = rf_close_year;
+
+			Previous_Date(&dd, &mm, &yy);
+
+			for(sector_no=2, found=0; ((sector_no<4) && !found);){
+				if((days_sector[sector_no-2]->date == dd) && (days_sector[sector_no-2]->month == mm) && (days_sector[sector_no-2]->year == yy)){
+					found =1;
+					present_sector_no = sector_no;   ///need to check
+				}
+				else
+					sector_no++;
+			}
+
+			while((ftp_rec_no >= 0) && (found == 1)){
+				if((days_sector[present_sector_no-2]->samples[ftp_rec_no].http_status != 1) && (days_sector[present_sector_no-2]->samples[ftp_rec_no].ftp_status != 1) && ((days_sector[present_sector_no-2]->samples[ftp_rec_no].rf != 0xFFFF))){
+
+					cumulative_rf1(days_sector[present_sector_no-2]->date, days_sector[present_sector_no-2]->month, days_sector[present_sector_no-2]->year,
+							days_sector[present_sector_no-2]->samples[ftp_rec_no].hour, days_sector[present_sector_no-2]->samples[ftp_rec_no].minute);
+
+					vTaskDelay(2 / portTICK_RATE_MS);
+
+					ftp_rf = c_rainfall;
+					f_bat_volt = ((((float)(days_sector[present_sector_no-2]->samples[ftp_rec_no].battery1) * 3.3/4095)/0.138));
+
+
+					sprintf(ftp_rec, "%s;%04d-%02d-%02d,%02d:%02d;%03d.%1d;%04d;%02d.%02d\r\n",
+							Global_Data_Params.gc_station_id,
+							days_sector[present_sector_no-2]->year,
+							days_sector[present_sector_no-2]->month,
+							days_sector[present_sector_no-2]->date,
+							days_sector[present_sector_no-2]->samples[ftp_rec_no].hour,
+							days_sector[present_sector_no-2]->samples[ftp_rec_no].minute,
+							ftp_rf/2, ((ftp_rf%2)?5:0),
+							days_sector[present_sector_no-2]->samples[ftp_rec_no].signal,
+							((int)f_bat_volt * 100)/100, (int)(f_bat_volt * 100) % 100);
+
+					strcat(ftp_buff,ftp_rec);
+
+					ftp_flag[ftp_line_cnt] = ftp_rec_no;
+					ftp_line_cnt++;
+				}
+
+				if(ftp_rec_no == 0)
+					found = 0;
+
+				ftp_rec_no--;
+
+				//	if((ftp_line_cnt > 20))
+				if((ftp_line_cnt > 19))
+					break;
+			}
+
+			if((ftp_line_cnt > 0) && (gi_sim_state == 1)){
+
+				response_no == eNack;
+
+				if(gi_sim_reg == 1){
+					ftp_server_connected = connect_ftp1();
+					vTaskDelay(200 / portTICK_RATE_MS);
+				}
+
+				response_no == eNack;
+
+				if(ftp_server_connected == 1)
+					response_no =  ftp_send_data();
+
+				vTaskDelay(200 / portTICK_RATE_MS);
+
+				if(response_no == eAck){
+					ftp_status = 1;
+					update_previous_day_flag = 1;		//update ftp flags in flash
+					vTaskDelay(2 / portTICK_RATE_MS);
+				}
+				else{
+					ftp_status = 0;
+					sleep_mode = 1;
+
+				}
+
+			}
+			else
+				sleep_mode = 1;
+
+		}
+
+		 */
+
+		else if (XITC_Ui_Gprs.signal) {
+			XITC_Ui_Gprs.result = eUi_Gprs_Cmd_In_Progress;
+
+			// process Ui request
+			if(XITC_Ui_Gprs.command == eUi_Gprs_Get_Sglvl){
+				//int sig_lvl;
+
+				get_signal_level();
+				XITC_Ui_Gprs.result = eUi_Gprs_Sglvl_Done;
+
+			}
+
+			else if (XITC_Ui_Gprs.command == eUi_Gprs_Get_CPIN){
+				check_sim_cpin();
+
+				if(gi_sim_state == 1)
+					XITC_Ui_Gprs.result = eUi_Gprs_CPIN_Done;
+				else
+					XITC_Ui_Gprs.result = eUi_Gprs_Cmd_Fail;
+			}
+
+			else if (XITC_Ui_Gprs.command == eUi_Gprs_Get_CREG){
+				check_sim_registration();
+
+				if(gi_sim_reg == 1)
+					XITC_Ui_Gprs.result = eUi_Gprs_CPIN_Done;
+				else
+					XITC_Ui_Gprs.result = eUi_Gprs_Cmd_Fail;
+			}
+
+
+			else if(XITC_Ui_Gprs.command == eUi_Gprs_Send_Status){
+				sprintf(status_response,"%s,%s,STATUS-F,%s,%04d-%02d-%02dT%02d:%02d,%s-%c,%d,%04d,%.2f,%s,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+						Global_Data_Params.gc_network_name,
+						Global_Data_Params.gc_station_type,
+						Global_Data_Params.gc_station_id,
+						xPresent_Date_Time.year,
+						xPresent_Date_Time.month,
+						xPresent_Date_Time.date,
+						xPresent_Date_Time.hour,
+						xPresent_Date_Time.minute,
+						Global_Data_Params.gc_version,
+						lpc845_ver,
+						Global_Data_Params.gi_report_interval,
+						gi_signal_level,
+						bat_volt,
+						(gi_disk_ok ? "SDC-OK" : "SDC-FAIL"),
+						gi_log_year,
+						gi_log_month,
+						gi_log_date,
+						gi_log_hour,
+						gi_log_minute,
+						gi_present_error
+				);
+				response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
+				vTaskDelay(100 / portTICK_RATE_MS);
+				XITC_Ui_Gprs.result = eUi_Gprs_Send_Status_Done;
+			}
+
+
+			else if(XITC_Ui_Gprs.command == eUi_Gprs_Send_Status1){
+				sprintf(status_response,"%s,%s,DEV_INFO,%s,%s,%04d-%02d-%02dT%02d:%02d\r\n\032",
+						Global_Data_Params.gc_network_name,
+						Global_Data_Params.gc_station_type,
+						Global_Data_Params.gc_station_id,
+						msg_data,
+						xPresent_Date_Time.year,
+						xPresent_Date_Time.month,
+						xPresent_Date_Time.date,
+						xPresent_Date_Time.hour,
+						xPresent_Date_Time.minute);
+				response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
+				vTaskDelay(100 / portTICK_RATE_MS);
+
+			}
+
+
+			else if(XITC_Ui_Gprs.command == eUI_Gps_Info){
+				get_gps_info();
+				if(gps_found == 1)
+					XITC_Ui_Gprs.result = eUI_Gps_Info_A;
+				else
+					XITC_Ui_Gprs.result = eUI_Gps_Info_NA;
+			}
+
+			XITC_Ui_Gprs.signal = 0;
+		}
+
+		else {
+			// no other request... idling... check if we have any new message received
+			lf_recd = response_in_count = 0;
+			gprs_response[0] =0;
+			if(( (lf_recd = getline((char *)0x2700c000, gprs_response, &gprs_recv_in_cnt, &gprs_recv_out_cnt,
+					&response_in_count, RECVBUF_SIZE, LINE_FEED)) == 1) ) {    //sizeof(gprs_recv_buf)
+				if (0 != (matching_ptr = look_for_str(gprs_response, "+CMTI:"))){
+					sscanf(matching_ptr, "+CMTI: \"SM\",%d", &msg_no);
+					if(msg_no <= MAX_NO_OF_MSGS)
+						message_recd[msg_no] = 1;
+				}
+				vTaskDelay(1 / portTICK_RATE_MS);
+			}
+		}
+
+		// Let us process the message
+		for(msg_no=1; msg_no<=MAX_NO_OF_MSGS; msg_no++){
+			if ( (message_recd[msg_no]) ){
+				GPRS_Done.sms = 0;
+				process_msg(msg_no);
+				message_recd[msg_no] = 0;
+				GPRS_Done.sms = 1;
+			}
+		}
+
+	}
+}

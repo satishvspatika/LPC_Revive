@@ -1,0 +1,9 @@
+
+
+
+//function prototypes
+void vDisk_Task(void *pvParameters);
+
+void check_sdc_status(void);
+void prepare_write_params(void);
+void get_params(void);

@@ -1,0 +1,1661 @@
+#include "globals.h"
+#include "FreeRTOS.h"
+#include "kbd.h"
+#include "lcd.h"
+#include "ui.h"
+#include "log.h"
+#include "task.h"
+#include "gprs.h"
+#include "memory.h"
+
+int iUi_Timer_Tc, iUi_Timer_End;
+int iUi_Key_for_match, iUi_Step_Entry_No, iUi_State, iUi_Step;
+int iLcd_Cur_Posn;
+int iNew_Key_2b_Processed;
+int iUi_Ret_State, iUi_Ret_Step;
+int ui_rain, ui_date, ui_month, ui_year, ui_hour, ui_minute;
+xDateTime_def xUi_Date_Time;
+int iUi_Param_No, iParam_timeout;
+char deg_symbol,per_symbol;
+
+int iUi_timeout, iUi_Pwd;
+void (*ptr2function)();
+void Ui_Nop(void);
+void Ui_Start(void);
+void Ui_Clr1(void);
+void Ui_Clr2(void);
+void Ui_Clr3(void);
+void Ui_GetDate_Time(void);
+void Prep_Date_Edit(void);
+void Ui_Edit_Upkey(void);
+void Ui_Edit_Downkey(void);
+void Ui_Edit_Leftkey(void);
+void Ui_Edit_Rightkey(void);
+void Ui_Edit(int key);
+void Ui_Set_RTC(void);
+void Ui_Shift(void);
+void Ui_Get_Curdate(void);
+void Ui_Get_Rf(void);
+void show_rf(void);
+void Ui_Next_Date(void);
+void Ui_Prev_Date(void);
+void Ui_Hist_Date(void);
+void Ui_Usb_Copy(void);
+void Ui_Last_Mon(void);
+void Ui_Next_Param(void);
+void Ui_Prev_Param(void);
+void Ui_Show_Param(void);
+void Ui_Get_Param(void);
+void Ui_Start_Params(void);
+void Ui_Send_Status(void);
+void Ui_Load_Params(void);
+void Ui_Calib(void);
+void Ui_Clear_Display(void);
+int Ui_Disp_n_Get(int posn, char scroll_buf[]);
+void Ui_Copy_Firmware(void);
+void Ui_Copy_Firmware1(void);
+void get_cur_rf(void);
+void Bat_status(void);
+void Ui_Inc_Val(void);
+void Ui_Dec_Val(void);
+void Ui_Pwd_Set(void);
+void Ui_Pwd_Cal(void);
+
+
+const int iUi_No_Of_Steps[15] = { 2,7,8,11,12,13,11,12,14,14,12,12,12,12};
+//                                0,1,2,3,  4, 5, 6, 7, 8, 9,10,11,12
+
+
+const struct UI_STEP_DEFN xUi_Steps[]= {
+
+		/*0 Idle State */
+		eDisp_Key,	&Ui_Start,	eLcd_Init,			0x00,	"",					eUi_Welcome,	0,	10,		//0
+		WILD_KEY,	&Ui_Clr1,	eLcd_Off,			0,		"",					eUi_Idle,		0,	2,		//1
+
+		/*1 Welcome state */
+		WILD_KEY,	&Ui_Nop,	eLcd_Display,		0x80,	WELCOME_STR1,		eUi_Welcome,	1,	1, 		//0
+		WILD_KEY,	&Ui_Nop,	eLcd_Display,		0xc0,	WELCOME_STR2,		eUi_Welcome,	2,	1, 		//1
+		eMenu_Key,	&Ui_Nop,	eLcd_Display,		0x80,	"",					eUi_Date_Time,	0,	1, 		//2
+		eDisp_Key,	&Ui_Nop,	eLcd_Off,			0x00,	"",					eUi_Idle,		0,	1, 		//3
+		eCalib_Key,	&Ui_Calib,	eLcd_Display,		0x00,	"",					eUi_Welcome,	0,	10,		//4
+		KEY_TIMEOUT,&Ui_Nop,	eLcd_Off,			0,		"",					eUi_Idle,		0,	1,		//5
+		WILD_KEY,	&Ui_Clr2,	eLcd_Display,		0,		"",					eUi_Welcome,	2,	5,		//6
+
+		/*2 Date Time State*/
+		WILD_KEY,	&Ui_Nop,		 eLcd_Display,	0x80,	DATETIME_STR,		eUi_Date_Time,	1,	1,		//0
+		WILD_KEY,	&Ui_GetDate_Time,eLcd_Display,	0xc0,	ui_lcd_disp_buf,	eUi_Date_Time,	2,	1,		//1
+		eMenu_Key,	&Ui_Nop,		 eLcd_Display,	0,		"",					eUi_Params,		0,	5,		//2
+		eSet_Key,	&Prep_Date_Edit, eLcd_Cur_On,	0xc0,	ui_lcd_disp_buf,	eUi_SetDate,	0,	1, 		//3
+		eBack_Key,	&Ui_Nop,		 eLcd_Display,	0,		"",					eUi_Welcome,	0,	1,		//4
+		eDisp_Key,	&Ui_Nop,		 eLcd_Off,		0,		"",					eUi_Idle,		0,	1,		//5
+		KEY_TIMEOUT,&Ui_Nop,		 eLcd_Off,		0,		"",					eUi_Idle,		0,	1,		//6
+		WILD_KEY,	&Ui_Clr3,		 eLcd_Display,	0,		"",					eUi_Date_Time,	1,	1,		//7
+
+
+		/*3 Set Date*/
+
+		eMenu_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_SetDate,	1,	1,		//0
+		eUp_Key,	&Ui_Edit_Upkey,	eLcd_Display,	0xc0,	ui_lcd_disp_buf,	eUi_SetDate,	10,	1,		//1
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_SetDate,	3,	5,		//2
+		eLeft_Key,	&Ui_Edit_Leftkey,eLcd_Display,	0xc0,	ui_lcd_disp_buf,	eUi_SetDate,	10,	1, 		//3
+		eSet_Key,	&Ui_Set_RTC,	eLcd_Cur_Off,	0,		"",					UI_RET,			0,	1, 		//4
+		eRight_Key,	&Ui_Edit_Rightkey,eLcd_Display,	0xc0,	ui_lcd_disp_buf,	eUi_SetDate,	10,	1, 		//5
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					UI_RET,			0,	1, 		//6
+		eDown_Key,	&Ui_Edit_Downkey,eLcd_Display,	0xc0,	ui_lcd_disp_buf,	eUi_SetDate,	10,	1, 		//7
+		eDisp_Key,	&Ui_Nop,		 eLcd_Display,	0,		"",					eUi_SetDate,	9,	1,		//8
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,		0,	1,	    //9
+		WILD_KEY,	&Ui_Nop,		eLcd_Set_Addr,	0xd0,	"",					eUi_SetDate,	0,	1, 	   //10
+
+		/*4 Params Display (at present) state */
+		WILD_KEY,	&Ui_GetDate_Time,eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_Params,		1,	1,		//0
+		WILD_KEY,	&get_cur_rf,	eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_Params,		2,	1, 	    //1
+		eMenu_Key,	&Ui_Get_Curdate,eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_History,	0,	1,		//2
+		eUp_Key,	&Ui_Nop,		eLcd_Display,	0,		ui_lcd_disp_buf,	eUi_Params,		4,	1,		//3
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Params,		5,	1,		//4
+		eLeft_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Params,		6,	1, 		//5
+		eSet_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Params,		7,	1, 		//6
+		eRight_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Params,		8,	1, 		//7
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Date_Time,	0,	1, 		//8
+		eDown_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Params,		10,	1,		//9
+		eDisp_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Idle,		0,	1,	   //10
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,		0,	1,	   //11
+
+		/*5 Closed Readings of Params Display (History) state */
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_History,	1,	1, 	    //0
+		WILD_KEY,	&show_rf,		eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_History,	2,	1, 	    //1
+		eMenu_Key,	&Ui_Get_Curdate,eLcd_Display,	0xC0,	"                ",	eUi_USB_Copy,	0,	1,		//2
+		eUp_Key,	&Ui_Next_Date,	eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_History,	1,	1,		//3
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_History,	5,	1,		//4
+		eLeft_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_History,	6,	1, 		//5
+		eSet_Key,	&Prep_Date_Edit,eLcd_Cur_On,	0x80,	ui_lcd_disp_buf,	eUi_Hi_Set_Date,0,	1,		//6
+		eRight_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_History,	8,	1, 		//7
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Params,		0,	1, 		//8
+		eDown_Key,	&Ui_Prev_Date,	eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_History,	1,	1,		//9
+		eDisp_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Idle,	0,	1,	       //10
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,		0,	1,	   //11
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_History,	1,	1, 	   //12
+
+		/*6 History_Set_Date to change the date for displaying closed rf value */
+		eMenu_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Hi_Set_Date,0,	1,		//0
+		eUp_Key,	&Ui_Edit_Upkey,	eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_Hi_Set_Date,10,	1,		//1
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Hi_Set_Date,3,	5,		//2
+		eLeft_Key,	&Ui_Edit_Leftkey,eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_Hi_Set_Date,10,	1, 		//3
+		eSet_Key,	&Ui_Hist_Date,	eLcd_Cur_Off,	0x80,		"",					UI_RET,		0,	10, 	//4
+		eRight_Key,	&Ui_Edit_Rightkey,eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_Hi_Set_Date,10,	1, 		//5
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Hi_Set_Date,0,	1, 		//6
+		eDown_Key,	&Ui_Edit_Downkey,eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_Hi_Set_Date,10,	1, 		//7
+		eDisp_Key,	&Ui_Nop,		 eLcd_Display,	0,		"",					eUi_Hi_Set_Date,9,	1,		//8
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,		0,	1,	    //9
+		WILD_KEY,	&Ui_Nop,		eLcd_Set_Addr,	0xd0,	"",					eUi_Hi_Set_Date,0,	1, 	   //10
+
+		/* 7 USB Copy */
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0xC0,	"                ",	eUi_USB_Copy,	1,	1,		//0
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0x80,	COPY_USB_STR,		eUi_USB_Copy,	2,	1, 	    //1
+		eMenu_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Show_Params,0,	1,		//2
+		eUp_Key,	&Ui_Nop,		eLcd_Display,	0xC0,	"",					eUi_USB_Copy,	1,	1,		//3
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_USB_Copy,	1,	5,		//4
+		eLeft_Key,	&Ui_Nop,		eLcd_Display,	0xC0,	"",					eUi_USB_Copy,	1,	1, 		//5
+		eSet_Key,	&Ui_Last_Mon, 	eLcd_Cur_Off,	0xC0,	ui_lcd_disp_buf,	eUi_USB_SetDate,0,	1,	 	//6
+		eRight_Key,	&Ui_Nop,		eLcd_Display,	0xC0,	"",					eUi_USB_Copy,	1,	1, 		//7
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_History, 	0,	1, 		//8
+		eDown_Key,	&Ui_Nop,		eLcd_Display,	0xC0,	"",					eUi_USB_Copy,	1,	1, 		//9
+		eDisp_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Idle,		0,	1,	   //10
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,		0,	1,	   //11
+
+
+		/*8 USB Copy Set date */
+
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0x80,	"   Copy  From    ",eUi_USB_SetDate,1,	1,		//0
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_USB_SetDate,2,	1, 		//1
+		WILD_KEY,	&Ui_Nop,		eLcd_Cur_On,	0,		"",					eUi_USB_SetDate,3,	1, 		//2
+		eMenu_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_USB_SetDate,4,	1,		//3
+		eUp_Key,	&Ui_Edit_Upkey,	eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_USB_SetDate,13,	1,		//4
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_USB_SetDate,6,	1,		//5
+		eLeft_Key,	&Ui_Edit_Leftkey,eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_USB_SetDate,13,	1, 		//6
+		eSet_Key,	&Ui_Usb_Copy,	eLcd_Cur_Off,	0xC0,	"",					eUi_Welcome,0,	10, 	//7
+		eRight_Key,	&Ui_Edit_Rightkey,eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_USB_SetDate,13,	1, 		//8
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_History,	0,	1, 		//9
+		eDown_Key,	&Ui_Edit_Downkey,eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_USB_SetDate,13,	1, 	   //10
+		eDisp_Key,	&Ui_Nop,		 eLcd_Display,	0,		"",					eUi_Idle,		0,	1,	   //11
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,		0,	1,	   //12
+		WILD_KEY,	&Ui_Nop,		eLcd_Set_Addr,	0xd0,	"",					eUi_USB_SetDate,2,	1, 	   //13
+
+		/* 9 showing parameters */
+		WILD_KEY,	&Ui_Start_Params,eLcd_Display,	0x80,	"Press Up or Down ", eUi_Show_Params,1,	1,		//0
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0xC0,	" for Parameters  ", eUi_Show_Params,2,	100,	//1
+		eMenu_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Send_SMS,	 0,	1,		//2
+		eUp_Key,	&Ui_Next_Param,	eLcd_Display,	0,		"",					eUi_Show_Params, 4,1,		//3
+		eCalib_Key,	&Ui_Pwd_Cal,		eLcd_Display,	0,		"",					eUi_Show_Params, 5,	1,		//4
+		eSet_Key,	&Ui_Pwd_Set,		eLcd_Display,	0,		"",					eUi_Show_Params, 6,	1,	 	//5
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_USB_Copy,	 0,	1, 		//6
+		eDown_Key,	&Ui_Prev_Param,	eLcd_Display,	0,		"",					eUi_Show_Params, 8,	1, 	    //7
+		eDisp_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Show_Params, 9,1,	   //8
+		eRight_Key,	&Ui_Nop,	eLcd_Display,	0xC0,	ui_lcd_disp_buf2,	eUi_Show_Params,12,	1, 		//9
+		eLeft_Key,	&Ui_Nop,	eLcd_Display,	0xC0,	ui_lcd_disp_buf2,	eUi_Show_Params,12,	1, 		//10
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,		0,	1,	   //11
+		WILD_KEY,	&Ui_Get_Param,	eLcd_Display,	0x80,	ui_lcd_disp_buf,	eUi_Show_Params,13,	1, 	   //12
+		WILD_KEY,	&Ui_Show_Param,	eLcd_Display,	0xC0,	ui_lcd_disp_buf2,	eUi_Show_Params,2,	1, 	   //13
+
+		/* 10 sending status */
+		WILD_KEY,	&Ui_Nop,        eLcd_Display,	0x80,	"   Send Status ? ", eUi_Send_SMS,1,	1,		//0
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0xC0,	"                 ", eUi_Send_SMS,2,	100,	//1
+		eMenu_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Load_Params, 0,	1,		//2
+		eUp_Key,	&Ui_Nop,	    eLcd_Display,	0,		"",					eUi_Send_SMS, 4,	1,		//3
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Send_SMS, 5,	1,		//4
+		eLeft_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Send_SMS, 6,	1, 		//5
+		eSet_Key,	&Ui_Send_Status,eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_Welcome,  0,	500,	//6
+		eRight_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Send_SMS, 8,	1, 		//7
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Show_Params,0,	1, 		//8
+		eDown_Key,	&Ui_Nop,	    eLcd_Display,	0,		"",					eUi_Send_SMS, 10,	1, 	    //9
+		eDisp_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Send_SMS, 0,	1,	   //10
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,	  0,	1,	   //11
+
+		/* 11 load params from usb */
+		WILD_KEY,	&Ui_Nop,        eLcd_Display,	0x80,	"   Load Params ? ", eUi_Load_Params,1,	1,		//0
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0xC0,	"                 ", eUi_Load_Params,2,	100,	//1
+		eMenu_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware,0,1,		//2
+		eUp_Key,	&Ui_Nop,	    eLcd_Display,	0,		"",					eUi_Load_Params, 4,	1,		//3
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Load_Params, 5,	1,		//4
+		eLeft_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Load_Params, 6,	1, 		//5
+		eSet_Key,	&Ui_Load_Params,eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_Welcome,     0,	300,	//6
+		eRight_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Load_Params, 8,	1, 		//7
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Send_SMS,    0,	1, 		//8
+		eDown_Key,	&Ui_Nop,	    eLcd_Display,	0,		"",					eUi_Load_Params, 10,1, 	    //9
+		eDisp_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Idle, 		 0,	1,	   //10
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,	     0,	1,	   //11
+
+		/* 12 copy firmware*/
+		WILD_KEY,	&Ui_Nop,        eLcd_Display,	0x80,	" Copy Firmware ? ",eUi_Copy_Firmware,1, 1,		//0
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0xC0,	"                 ",eUi_Copy_Firmware,2, 100,	//1
+		eMenu_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware1,0, 1,		//2
+		eUp_Key,	&Ui_Nop,	    eLcd_Display,	0,		"",					eUi_Copy_Firmware,4, 1,		//3
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware,5, 1,		//4
+		eLeft_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware,6, 1, 	//5
+		eSet_Key,	&Ui_Copy_Firmware,eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_Welcome,	  0, 300,	//6
+		eRight_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware,8, 1, 	//7
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Load_Params,  0, 1, 	//8
+		eDown_Key,	&Ui_Nop,	    eLcd_Display,	0,		"",					eUi_Copy_Firmware,10,1, 	//9
+		eDisp_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Idle, 		  0, 1,	   //10
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,	      0, 1,	   //11
+
+
+		/* 13 copy firmware1*/
+		WILD_KEY,	&Ui_Nop,        eLcd_Display,	0x80,	"   Copy Firmware  ",eUi_Copy_Firmware1,1, 1,		//0
+		WILD_KEY,	&Ui_Nop,		eLcd_Display,	0xC0,	"    For LPC824?   ",eUi_Copy_Firmware1,2, 100,	//1
+		eMenu_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware1,0, 1,		//2
+		eUp_Key,	&Ui_Nop,	    eLcd_Display,	0,		"",					eUi_Copy_Firmware1,4, 1,		//3
+		eCalib_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware1,5, 1,		//4
+		eLeft_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware1,6, 1, 	//5
+		eSet_Key,	&Ui_Copy_Firmware1,eLcd_Display,	0xC0,	ui_lcd_disp_buf,	eUi_Welcome,	  0, 300,	//6
+		eRight_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware1,8, 1, 	//7
+		eBack_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Copy_Firmware,  0, 1, 	//8
+		eDown_Key,	&Ui_Nop,	    eLcd_Display,	0,		"",					eUi_Copy_Firmware1,10,1, 	//9
+		eDisp_Key,	&Ui_Nop,		eLcd_Display,	0,		"",					eUi_Idle, 		  0, 1,	   //10
+		KEY_TIMEOUT,&Ui_Nop,		eLcd_Off,		0,		"",					eUi_Idle,	      0, 1,	   //11
+
+
+};
+
+
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Nop
+ * 	DESCRIPTION : This is a simple function that will not do any operation. It is just an empty function.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : None
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Nop(void)
+{
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Start
+ * 	DESCRIPTION : This function is used for setting the gUi_Active flag. Whenever this flag is set then LCD will be in ON Condition
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : gUi_Active
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Start(void)
+{
+	gUi_Active = 1;		// Starting UI
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : get_cur_rf
+ * 	DESCRIPTION : This function is used to get the present rainfall
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : None
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void get_cur_rf(void)
+{
+	sprintf(ui_lcd_disp_buf, "Rainfall   %03d.%1d", rainfall/2, ((rainfall%2)?5:0) );
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Send_Status
+ * 	DESCRIPTION : This function is used to send the status message to Universal GSM
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Send_Status(void)
+{
+	strcpy(ui_lcd_disp_buf, "Sending  Message ");
+	XITC_Ui_Gprs.command = eUi_Gprs_Send_Status;
+	XITC_Ui_Gprs.signal = 1;
+	/*while(XITC_Ui_Gprs.signal)
+		vTaskDelay(10 / portTICK_RATE_MS);*/
+	vTaskDelay(200 / portTICK_RATE_MS);
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Clr1
+ * 	DESCRIPTION : This function is used to disable the Display key from key processing
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : iNew_Key_2b_Processed, gUi_Active
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Clr1(void)
+{
+	if (iNew_Key_2b_Processed != eDisp_Key){
+		iNew_Key_2b_Processed = 0;
+		XITC_Kbd_Log.sig_key = 0;
+	}
+	gUi_Active = 0;		// no more UI
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Clr2
+ * 	DESCRIPTION : This function is used to disable the display key and menu key from key processing.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : iNew_Key_2b_Processed, XITC_Kbd_Log.sig_key
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Clr2(void)
+{
+	if ((iNew_Key_2b_Processed != eDisp_Key) &&
+			(iNew_Key_2b_Processed != eMenu_Key)){
+		iNew_Key_2b_Processed = 0;
+		XITC_Kbd_Log.sig_key = 0;
+	}
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Clr3
+ * 	DESCRIPTION : This function is used to disable the Enter key, display key, menu key and back key from key processing
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : iNew_Key_2b_Processed, XITC_Kbd_Log.sig_key
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Clr3(void)
+{
+	if ((iNew_Key_2b_Processed != eSet_Key) && (iNew_Key_2b_Processed != eDisp_Key) &&
+			(iNew_Key_2b_Processed != eMenu_Key)&&(iNew_Key_2b_Processed != eBack_Key)){
+		iNew_Key_2b_Processed = 0;
+		XITC_Kbd_Log.sig_key = 0;
+	}
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_GetDate_Time
+ * 	DESCRIPTION : This function is used to  display the present date and time in LCD.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : ui_date,ui_month, ui_year, ui_hour, ui_minute, ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_GetDate_Time(void)
+{
+	ui_date		= xPresent_Date_Time.date;
+	ui_month	= xPresent_Date_Time.month;
+	ui_year		= xPresent_Date_Time.year;
+	ui_hour		= xPresent_Date_Time.hour;
+	ui_minute	= xPresent_Date_Time.minute;
+
+	sprintf(ui_lcd_disp_buf, "%02d-%02d-%04d,%02d:%02d",
+			ui_date, ui_month, ui_year, ui_hour, ui_minute);
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Get_Curdate
+ * 	DESCRIPTION : This function is used to get the current date time and this function will be called to get the Closed RF of the date
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : ui_date,ui_month, ui_year, ui_hour, ui_minute, ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Ui_Get_Rf
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+
+void Ui_Get_Curdate(void)
+{
+	ui_date		= xPresent_Date_Time.date;
+	ui_month	= xPresent_Date_Time.month;
+	ui_year		= xPresent_Date_Time.year;
+
+	sprintf(ui_lcd_disp_buf, "   %02d-%02d-%04d    ",
+			xPresent_Date_Time.date,
+			xPresent_Date_Time.month,
+			xPresent_Date_Time.year);
+	Ui_Get_Rf();
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : show_rf
+ * 	DESCRIPTION : This function is used to display the Closed RF
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void show_rf(void)
+{
+	if (ui_rain != -1)
+		sprintf(ui_lcd_disp_buf, "Closed RF  %03d.%1d ", ui_rain/2, ((ui_rain%2)?5:0));
+	else {
+		sprintf(ui_lcd_disp_buf, "Closed RF    NIL  ");
+	}
+}
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Get_Rf
+ * 	DESCRIPTION : This function is used to get closed rainfall of the date.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : XITC_Ui_Disk.date, XITC_Ui_Disk.month, XITC_Ui_Disk.year, XITC_Ui_Disk.hour, XITC_Ui_Disk.minute, ui_rain
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Get_Rf(void)
+{
+	char *ptr_read_buf;
+	float frain;
+	// get the rf value from SD card !!
+	XITC_Ui_Disk.date	= ui_date;
+	XITC_Ui_Disk.month	= ui_month;
+	XITC_Ui_Disk.year	= ui_year;
+	XITC_Ui_Disk.hour	= CLOSING_HR;
+	XITC_Ui_Disk.minute	= CLOSING_MIN;
+	XITC_Ui_Disk.command = eITC_Ui_Disk_Get;
+	while(XITC_Ui_Disk.command)
+		vTaskDelay(40 / portTICK_RATE_MS);
+	ptr_read_buf = look_for_str(XITC_Ui_Disk.read_buf, "rainfall=");
+	if((ptr_read_buf ) != 0){
+		sscanf(ptr_read_buf, "rainfall=%f", &frain);
+		ui_rain = (int)(frain*2);
+	}
+	else
+		ui_rain = -1;
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Copy_Firmware
+ * 	DESCRIPTION : This function is used to copy the new firmware from USB to SDC.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Copy_Firmware(void)
+{
+	XITC_Ui_Disk.command = eITC_Ui_Copy_Firmware;
+	vTaskDelay(3000 / portTICK_RATE_MS);
+	if(gi_update_firmware == 1)
+		sprintf(ui_lcd_disp_buf , " Firmware Copied ");
+	else
+		sprintf(ui_lcd_disp_buf , " Copying Failed  ");
+}
+
+void Ui_Copy_Firmware1(void)
+{
+	XITC_Ui_Disk.command = eITC_Ui_Copy_Firmware1;
+	vTaskDelay(2000 / portTICK_RATE_MS);
+	if(gi_update_firmware1 == 1){
+		sprintf(ui_lcd_disp_buf , " Firmware Copied ");
+		firmware_copied = 1;
+		vTaskDelay(100 / portTICK_RATE_MS);
+
+	}
+	else{
+		sprintf(ui_lcd_disp_buf , " Copying Failed  ");
+		del_fw_file = 1;
+	}
+}
+
+
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Hist_Date
+ * 	DESCRIPTION : This function is used to give all the date. i.e.,
+ * 				when we press the Up/Down key date will be changed and the corresponding closed RF will be displayed in LCD..
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Ui_Get_Rf
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Hist_Date(void){
+	int date, month, year, hour, minute;
+	sscanf(ui_lcd_disp_buf, "%d-%d-%d", &date, &month, &year);
+	ui_date		= date;
+	ui_month	= month;
+	ui_year		= year;
+	Ui_Get_Rf();
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Load_Params
+ * 	DESCRIPTION : This function is used to load the new parameters from USB to SDC
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Load_Params(void)
+{
+	XITC_Ui_Disk.command = eITC_Ui_Load_Params;
+	vTaskDelay(3000 / portTICK_RATE_MS);
+	if(gi_load_params == 1)
+		sprintf(ui_lcd_disp_buf , " Params  Loaded ");
+	else
+		sprintf(ui_lcd_disp_buf , " Loading Failed  ");
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Usb_Copy
+ * 	DESCRIPTION : This function will be called when we set the date for copying data to USB. We can set From date only.
+ * 				 ( for example when we set the 10-06-2014 then it will copy the data up to today.
+ * 				  So from date only we have to set here and To date it will take as Today date automatically).
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : ui_lcd_disp_buf, XITC_Ui_Disk.date, XITC_Ui_Disk.month, XITC_Ui_Disk.year, XITC_Ui_Lcd.disp_str
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Next_Date
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Usb_Copy(void){
+	int date, month, year, hour, minute;
+	int time_out, copying_over;
+	time_out = 3000;
+	sscanf(ui_lcd_disp_buf, "%d-%d-%d", &date, &month, &year);
+	ui_date		= date;
+	ui_month	= month;
+	ui_year		= year;
+	copying_over = 0;
+	for(;;){
+		XITC_Ui_Disk.date = ui_date;
+		XITC_Ui_Disk.month = ui_month;
+		XITC_Ui_Disk.year = ui_year;
+		XITC_Ui_Disk.command = eITC_Ui_Disk_Copy;
+
+		sprintf(XITC_Ui_Lcd.disp_str, "   %02d-%02d-%04d    ", ui_date, ui_month, ui_year);
+		XITC_Ui_Lcd.lcd_posn	= 0x80;
+		XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+		XITC_Ui_Lcd.sig = 1;
+
+		while(XITC_Ui_Lcd.sig)
+			vTaskDelay(10 / portTICK_RATE_MS);
+
+		sprintf(XITC_Ui_Lcd.disp_str, "Copying...       ");
+		XITC_Ui_Lcd.lcd_posn	= 0xC0;
+		XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+		XITC_Ui_Lcd.sig = 1;
+
+		while(XITC_Ui_Lcd.sig)
+			vTaskDelay(10 / portTICK_RATE_MS);
+
+		while (XITC_Ui_Disk.command ){
+			vTaskDelay(10 / portTICK_RATE_MS);
+			time_out--;		// what will happen if there is a timeout.... to be discussed
+		}
+
+		if (XITC_Ui_Disk.result == -1)
+			sprintf(XITC_Ui_Lcd.disp_str, "Copying  Failed ");
+
+		else
+			sprintf(XITC_Ui_Lcd.disp_str, "Copying  OK     ");
+
+		XITC_Ui_Lcd.lcd_posn	= 0xC0;
+		XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+		XITC_Ui_Lcd.sig = 1;
+		taskENTER_CRITICAL();
+		gi_wdt_task_ok_stat |= WDT_UI_OK;
+		taskEXIT_CRITICAL();
+		vTaskDelay(400 / portTICK_RATE_MS);
+
+
+		if ((ui_date == xPresent_Date_Time.date) && (ui_month == xPresent_Date_Time.month)
+				&& (ui_year == xPresent_Date_Time.year) ){
+			copying_over = 1;
+		}
+
+		if (copying_over ==1) break;
+
+		Next_Date(&ui_date, &ui_month, &ui_year);
+
+	}
+
+	if(copying_over == 1){
+		sprintf(XITC_Ui_Lcd.disp_str, "Copying  DONE     ");
+		XITC_Ui_Lcd.lcd_posn	= 0xC0;
+		XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+		XITC_Ui_Lcd.sig = 1;
+		vTaskDelay(3000 / portTICK_RATE_MS);
+
+		sprintf(XITC_Ui_Lcd.disp_str, "  Power OFF and   ");
+		XITC_Ui_Lcd.lcd_posn	= 0x80;
+		XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+		XITC_Ui_Lcd.sig = 1;
+		while (XITC_Ui_Lcd.sig);
+		sprintf(XITC_Ui_Lcd.disp_str, " Remove the USB ");
+		XITC_Ui_Lcd.lcd_posn	= 0xC0;
+		XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+		XITC_Ui_Lcd.sig = 1;
+
+		vTaskDelay(5000 / portTICK_RATE_MS);
+	}
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Next_Param
+ * 	DESCRIPTION : It will give next state of the parameters and this function will be called when we press the UP Key in Params Screen
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : iUi_Param_No, iUi_timeout
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Next_Param(void)
+{
+
+	iUi_Param_No = (iUi_Param_No+1) % MAX_UI_PARAMS;
+	iUi_timeout = 0;
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Prev_Param
+ * 	DESCRIPTION : It will give Previous state of the parameters and this function will be called when we press the DOWN Key in Params Screen.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : iUi_Param_No, iUi_timeout
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Prev_Param(void)
+{
+	iUi_Param_No = (iUi_Param_No+(MAX_UI_PARAMS-1)) % MAX_UI_PARAMS;
+	iUi_timeout = 0;
+}
+//----------------------------------------------------------
+
+/* New prog to look at the pwd seq */
+void Ui_Pwd_Set(void)
+{
+	if((iUi_Pwd == 1) || (iUi_Pwd == 2) )
+		iUi_Pwd++;
+	else
+		iUi_Pwd = 0;
+
+
+}
+void Ui_Pwd_Cal(void)
+{
+	if((iUi_Pwd == 0) || (iUi_Pwd == 3) || (iUi_Pwd == 4) )
+		iUi_Pwd++;
+	else
+		iUi_Pwd = 0;
+	if (iUi_Pwd == 5)
+		iUi_Param_No = 9;
+
+}
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Show_Param
+ * 	DESCRIPTION : This function is used to display all the states of the parameters. Totally 10 states are there
+					1.	Welcome Screen ( it will display product details)
+					2.	Date time screen (we can edit the date time by using Key board).
+					3.	Rain fall details ( it will give present rainfall)
+					4.	Closed Rainfall ( it will give Closed(8.30) data rain fall of the date)
+					5.	Copy to USB (it will ask the from date to copy the data to USB).
+					6.	Params Display( it will give Station Id, Station name, Signal Level, SIM Status, Last Logged date, Network Error details, Calibration details,
+						Battery voltage, version,).
+					7.	Send status message to Universal GSM Number.
+					8.	Load new parameters by USB.
+					9.	Load new firmware by USB.
+					10.	Test the Battery Charging and Cutoff
+
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : ui_lcd_disp_buf,
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Show_Param(void)
+{
+
+	strcpy(ui_lcd_disp_buf,  "                 ");
+	strcpy(ui_lcd_disp_buf2, ui_lcd_disp_buf);
+
+	switch(iUi_Param_No){
+
+	case 0:	// station params
+		sprintf(ui_lcd_disp_buf,  "Stn ID:   %s    ", Global_Data_Params.gc_station_id);
+		sprintf(ui_lcd_disp_buf2, " %s            ", Global_Data_Params.gc_station_name);
+		break;
+
+	case 1: // signal level
+		sprintf(ui_lcd_disp_buf,  " Signal   Level ");
+		sprintf(ui_lcd_disp_buf2, "    %d dBm   ", gi_signal_level);
+		break;
+
+	case 2: // sim status
+		sprintf(ui_lcd_disp_buf,  "   SIM Status   ");
+		if (gi_sim_state == 0)
+			sprintf(ui_lcd_disp_buf2, "     ERROR      ");
+		else
+			sprintf(ui_lcd_disp_buf2, "       OK       ");
+		break;
+
+	case 3: // Net State
+		sprintf(ui_lcd_disp_buf,  " Last Logged at ");
+		sprintf(ui_lcd_disp_buf2, "%02d-%02d-%04d %02d:%02d",
+				gi_log_date, gi_log_month, gi_log_year,
+				gi_log_hour, (gi_log_minute));
+		break;
+
+	case 4:  // error details
+		sprintf(ui_lcd_disp_buf,  "   Net Error    ");
+		sprintf(ui_lcd_disp_buf2, " P=%d    C=%d   ", gi_present_error, gi_net_error);
+		break;
+
+	case 5:  // Calib status
+		sprintf(ui_lcd_disp_buf,  "Calib: %s        ", (Cailb_Status_Details.status?"Success   ":"Failed    "));
+		sprintf(ui_lcd_disp_buf2, " on %02d-%02d-%04d  ",  Cailb_Status_Details.date,Cailb_Status_Details.month,Cailb_Status_Details.year);
+		break;
+
+
+	case 6:
+		sprintf(ui_lcd_disp_buf,  " Battery Voltage ");
+		sprintf(ui_lcd_disp_buf2, "      %.2f        ", bat_volt);
+		break;
+
+	case 7:
+		sprintf(ui_lcd_disp_buf,  "    Version     ");
+		sprintf(ui_lcd_disp_buf2, "%s-%s           ", Global_Data_Params.gc_version, lpc845_ver);
+		break;
+
+	default:
+		break;
+
+	}
+	while(strlen(ui_lcd_disp_buf2) < 17)
+		strcat(ui_lcd_disp_buf2, " ");
+
+
+}
+//-------------------------------------------------------------------------------
+/*
+ * New programs introduced for Battery cutoff, charge, configuring sim900 or q26
+*/
+
+void Ui_Inc_Val()
+{
+
+}
+
+void Ui_Dec_Val()
+{}
+
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Get_Param
+ * 	DESCRIPTION : This function is used to get the Signal Strength and SIM States
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :iUi_timeout
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Get_Param(void)
+{
+	if(iUi_timeout)
+		iUi_timeout--;
+	else if (XITC_Ui_Gprs.signal != 1){
+		if (iUi_Param_No == 1){
+			XITC_Ui_Gprs.command = eUi_Gprs_Get_Sglvl;
+			XITC_Ui_Gprs.result	= 0;
+			XITC_Ui_Gprs.signal = 1;
+			iUi_timeout = 20000/120;
+		}
+		else if(iUi_Param_No == 2){
+			XITC_Ui_Gprs.command = eUi_Gprs_Get_CPIN;
+			XITC_Ui_Gprs.result	= 0;
+			XITC_Ui_Gprs.signal = 1;
+			iUi_timeout = 20000/120;
+		}
+	}
+}
+
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Start_Params
+ * 	DESCRIPTION : This function will be called before start the params display. It is just to display “Press Up or Down for Parameters” message in LCD
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :iUi_timeout, iUi_timeout, ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Start_Params(void)
+{
+	iUi_timeout = 0;
+	iUi_Param_No = 0;
+	sprintf(ui_lcd_disp_buf,   "Press Up or Down");
+	sprintf(ui_lcd_disp_buf2,  " for Parameters ");
+	iUi_Pwd = 0;
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Next_Date
+ * 	DESCRIPTION : This function is used to call the following two functions:
+				Next_Date : it is used to find the next date of the given date
+				Ui_Get_Rf: it is used to get the Closed Rainfall of the day
+
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :ui_date, ui_month, ui_year, ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Ui_Get_Rf
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Next_Date(void) {
+	Next_Date(&ui_date, &ui_month, &ui_year);
+	sprintf(ui_lcd_disp_buf, "   %02d-%02d-%04d    ", ui_date, ui_month, ui_year);
+	Ui_Get_Rf();
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Prev_Date
+ * 	DESCRIPTION : This function is used to call the following two functions:
+					Prev_Date : it is used to find the Previous date of the given date
+					Ui_Get_Rf: it is used to get the Closed Rainfall of the day.
+ *
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :ui_date, ui_month, ui_year, ui_lcd_disp_buf
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Ui_Get_Rf
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Prev_Date(void) {
+	Previous_Date(&ui_date, &ui_month, &ui_year);
+	sprintf(ui_lcd_disp_buf, "   %02d-%02d-%04d    ", ui_date, ui_month, ui_year);
+	Ui_Get_Rf();
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Next_Date
+ * 	DESCRIPTION : This function is used to find the next date of the given date.
+* 	VERSION : 1.5
+* 	ARGUMENTS : Nd, Nm, Ny
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :None
+*	CALLED FUNCTION : Ui_Usb_Copy, Ui_Next_Date
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Next_Date(int *Nd, int *Nm, int *Ny)
+{
+	int no_of_days[14] = { 29, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+	int prev_mm;
+
+	*Nd = *Nd + 1;
+
+	if ((*(Ny) % 4 == 0) && (*Nm == 2)) {
+		prev_mm = 0;
+	} else {
+		prev_mm = *Nm;
+	}
+	if (*Nd > no_of_days[prev_mm]) {
+		*Nd = 1;
+		*Nm = *Nm + 1;
+		if (*Nm > 12) {
+			*Nm = 1;
+			*Ny = *Ny + 1;
+		}
+	}
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Previous_Date
+ * 	DESCRIPTION : This function is used to find the previous date of the given date.
+* 	VERSION : 1.5
+* 	ARGUMENTS : Cd, Cm, Cy
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :None
+*	CALLED FUNCTION : Ui_Prev_Date
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Previous_Date(int *Cd, int *Cm, int *Cy) {
+	int no_of_days[14] = { 29, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+	int prev_mm_day;
+	int prev_dd_day;
+	prev_mm_day = *Cm;
+	prev_dd_day = *Cd - 1;
+	if (0 == prev_dd_day) {
+		prev_mm_day = prev_mm_day - 1;
+		if (prev_mm_day == 0) {
+			prev_mm_day = 12;
+			*Cy = *Cy - 1;
+		}
+
+		if ((*(Cy + 0) % 4 == 0) && (prev_mm_day == 2)) {
+			prev_dd_day = 29;
+		} else {
+			prev_dd_day = no_of_days[prev_mm_day];
+		}
+	}
+
+	*Cd = prev_dd_day;
+	*Cm = prev_mm_day;
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Prep_Date_Edit
+ * 	DESCRIPTION : This function is used to edit the date while copy to usb
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :iLcd_Cur_Posn, iUi_Ret_State, iUi_Ret_Step
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Prep_Date_Edit(void)
+{
+	int posn;
+
+	if (iUi_State == eUi_History) {
+		sprintf(ui_lcd_disp_buf, "   %02d-%02d-%04d    ", ui_date, ui_month, ui_year);
+	}
+	if(iUi_State == eUi_USB_Copy){
+		sprintf(ui_lcd_disp_buf, "   %02d-%02d-%04d    ", ui_date, ui_month, ui_year);
+	}
+	for (posn = 0; posn < 16; posn++) {
+		if ((ui_lcd_disp_buf[posn] > 0x2F) && (ui_lcd_disp_buf[posn] < 0x3A))
+			break;
+	}
+	if(iUi_State == eUi_Date_Time){
+		iLcd_Cur_Posn = posn+0xC0;
+		iUi_Ret_State = eUi_Date_Time;
+	}
+	else if(iUi_State == eUi_History){
+		iLcd_Cur_Posn = posn+0x80;
+		iUi_Ret_State = eUi_History;
+	}
+	else if(iUi_State == eUi_USB_Copy){
+		iLcd_Cur_Posn = posn+0x80;
+		iUi_Ret_State = eUi_USB_Copy;
+	}
+
+
+	iUi_Ret_Step = 0;
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Last_Mon
+ * 	DESCRIPTION : This function is used to find the last month date for copying one month data.
+ * 				( for example today date is 25-06-2014 then when you press the enter key for copying from date will show 01-05-2014).
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :ui_date, ui_month, ui_year, ui_lcd_disp_buf, iLcd_Cur_Posn
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Last_Mon(void){
+
+	int posn;
+	// last month ?
+	ui_date = 1;
+	ui_month	= xPresent_Date_Time.month - 1;
+	if (ui_month == 0){
+		ui_year		= xPresent_Date_Time.year - 1;
+		ui_month = 12;
+	}
+	else
+		ui_year		= xPresent_Date_Time.year;
+
+	sprintf(ui_lcd_disp_buf, "   %02d-%02d-%04d    ", ui_date, ui_month, ui_year);
+
+	for (posn = 0; posn < 16; posn++) {
+		if ((ui_lcd_disp_buf[posn] > 0x2F) && (ui_lcd_disp_buf[posn] < 0x3A))
+			break;
+	}
+	iLcd_Cur_Posn = posn+0xC0;
+}
+
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Edit_Upkey
+ * 	DESCRIPTION : This function is called whenever we edit the date time using UP Key.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :None
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Ui_Edit
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Edit_Upkey() {
+	Ui_Edit(eUp_Key);
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Edit_Downkey
+ * 	DESCRIPTION : This function is called whenever we edit the date time using DOWN Key.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :None
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Ui_Edit
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Edit_Downkey(void) {
+	Ui_Edit(eDown_Key);
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Edit_Leftkey
+ * 	DESCRIPTION : This function is called whenever we edit the date time using Left Key.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :None
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Ui_Edit
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Edit_Leftkey(void) {
+	Ui_Edit(eLeft_Key);
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Edit_Rightkey
+ * 	DESCRIPTION : This function is called whenever we edit the date time using Right Key.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :None
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Ui_Edit
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Edit_Rightkey() {
+	Ui_Edit(eRight_Key);
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Edit
+ * 	DESCRIPTION : This function is used to edit the cursor for key press(UP,DOWN,LEFT,RIGHT)
+* 	VERSION : 1.5
+* 	ARGUMENTS : key
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :ui_lcd_disp_buf, iLcd_Cur_Posn
+*	CALLED FUNCTION : Ui_Edit_Rightkey, Ui_Edit_Leftkey, Ui_Edit_Upkey, Ui_Edit_Downkey
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Edit(int key)
+{
+	int i, posn;
+
+	posn = iLcd_Cur_Posn & 0x3f;
+
+	switch (key) {
+	case eUp_Key:
+		ui_lcd_disp_buf[posn] = (ui_lcd_disp_buf[posn] + 1 - '0') % 10 + '0';
+		break;
+	case eDown_Key:
+		ui_lcd_disp_buf[posn] = (ui_lcd_disp_buf[posn] + 9 - '0') % 10 + '0';
+		break;
+	case eRight_Key:
+		for (i = 0; i < 16; i++) {
+			posn = (posn + 1) % 16;
+			if ((ui_lcd_disp_buf[posn] > 0x2F)
+					&& (ui_lcd_disp_buf[posn] < 0x3A))
+				break;
+
+		}
+		iLcd_Cur_Posn = (iLcd_Cur_Posn & 0xc0) | posn;
+		break;
+	case eLeft_Key:
+		for (i = 0; i < 16; i++) {
+			posn = (posn + 15) % 16;
+			if ((ui_lcd_disp_buf[posn] > 0x2F)
+					&& (ui_lcd_disp_buf[posn] < 0x3A))
+				break;
+		}
+		iLcd_Cur_Posn = (iLcd_Cur_Posn & 0xc0) | posn;
+
+		break;
+	default:
+		break;
+	}
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Set_RTC
+ * 	DESCRIPTION : This function is used to set the new date time to RTC.
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : XITC_Ui_Rtc.px_New_Date_Time, ui_lcd_disp_buf, xUi_Date_Time.date, xUi_Date_Time.month, xUi_Date_Time.year
+*						xUi_Date_Time.hour, xUi_Date_Time.minute
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Set_RTC(void)
+{
+	int date, month, year, hour, minute;
+	sscanf(ui_lcd_disp_buf, "%d-%d-%d,%d:%d", &date, &month, &year, &hour, &minute);
+	xUi_Date_Time.date		= date;
+	xUi_Date_Time.month		= month;
+	xUi_Date_Time.year		= year;
+	xUi_Date_Time.hour		= hour;
+	xUi_Date_Time.minute	= minute;
+	XITC_Ui_Rtc.px_New_Date_Time = &xUi_Date_Time;
+	XITC_Ui_Rtc.signal = 1;
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Clear_Display
+ * 	DESCRIPTION : This function is used to clear the LCD display.
+* 	VERSION : 1.5
+* 	ARGUMENTS : NOne
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :XITC_Ui_Lcd.disp_str
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Clear_Display(void)
+{
+	strcpy (ui_lcd_disp_buf2, "                ");
+	while (XITC_Ui_Lcd.sig)
+		vTaskDelay(10 / portTICK_RATE_MS);
+	XITC_Ui_Lcd.lcd_posn	= 0x80;
+	XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+	sprintf(XITC_Ui_Lcd.disp_str, "%s", ui_lcd_disp_buf2);
+	XITC_Ui_Lcd.sig = 1;
+	while (XITC_Ui_Lcd.sig)
+		vTaskDelay(10 / portTICK_RATE_MS);
+	XITC_Ui_Lcd.lcd_posn	= 0xC0;
+	XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+	sprintf(XITC_Ui_Lcd.disp_str, "%s", ui_lcd_disp_buf2);
+	XITC_Ui_Lcd.sig = 1;
+	while (XITC_Ui_Lcd.sig)
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Disp_n_Get
+ * 	DESCRIPTION : This function is used to get the scrolling message in LCD.
+* 	VERSION : 1.5
+* 	ARGUMENTS : posn,  scroll_buf
+* 	RETURN VALUES : iKey
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED :XITC_Ui_Lcd.disp_str, ui_lcd_disp_buf
+*	CALLED FUNCTION : Ui_Calib
+*	CALLING FUNCTION : None
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+int Ui_Disp_n_Get(int posn, char scroll_buf[])
+{
+	int iKey,  i;
+	iKey = eNo_Key;
+	// show the second row
+	XITC_Ui_Lcd.lcd_posn	= 0xC0;
+	XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+	sprintf(XITC_Ui_Lcd.disp_str, "%s", ui_lcd_disp_buf2);
+	XITC_Ui_Lcd.sig = 1;
+	while (XITC_Ui_Lcd.sig)
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+	// show the first row in scroll mode
+	strcpy (ui_lcd_disp_buf, "                ");
+	for(i=0; i<16; i++){
+		if(scroll_buf[posn+i])
+			ui_lcd_disp_buf[i] = scroll_buf[posn+i];
+		else {
+			ui_lcd_disp_buf[i] = 0;
+			break;
+		}
+	}
+	ui_lcd_disp_buf[i] = 0;
+	XITC_Ui_Lcd.lcd_posn	= 0x80;
+	XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+	sprintf(XITC_Ui_Lcd.disp_str, "%s", ui_lcd_disp_buf);
+	XITC_Ui_Lcd.sig = 1;
+	while (XITC_Ui_Lcd.sig)
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+	// now see if any key is pressed
+	if(XITC_Kbd_Log.sig_key == 1){
+		XITC_Kbd_Log.sig_key = 0;
+		if((XITC_Kbd_Log.key_value == eSet_Key) || (XITC_Kbd_Log.key_value == eBack_Key))
+			iKey = XITC_Kbd_Log.key_value;
+	}
+	return(iKey);
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : Ui_Calib
+ * 	DESCRIPTION : This function will be called when we press the calib key. This calibration state is mainly used for checking the rainfall sensors
+ * 				and it will give Calibration status and Calibration date. we are measuring 0.5mm rain. While doing calibration we can get either
+ * 				success or failed. We should give 10tips then in LCD it will show 5mm , then press enter it will give success. It should be 5 mm.
+ * 				it will give failed status if rainfall is not 5mm
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : gi_rf_before_calib, XITC_Ui_F968UART.calib_rf,
+*	CALLED FUNCTION : xUi_Steps
+*	CALLING FUNCTION : Ui_Disp_n_Get
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void Ui_Calib(void)
+{
+	int Ui_Calib_State, iKey;
+	char Ui_Scrolling_Lcd_Buf[100];
+	Ui_Calib_State = eCalib_Idle;
+	Ui_Clear_Display();
+	int loop_active;
+	int iPosition;
+
+	iPosition = 0;
+	loop_active = 1;
+
+	while(loop_active){
+		vTaskDelay(400 / portTICK_RATE_MS);
+		switch(Ui_Calib_State){
+		case eCalib_Idle:
+			strcpy(Ui_Scrolling_Lcd_Buf,   "               Perform Calibration Checks? (Press Set/Back)                 ");
+			if(iPosition > strlen(Ui_Scrolling_Lcd_Buf))
+				iPosition = 0;
+			iKey = Ui_Disp_n_Get(iPosition, Ui_Scrolling_Lcd_Buf);
+			if(iKey == eSet_Key){
+				Ui_Calib_State = eCalib_Rain;	// first perform Rain Calibration
+				gi_rf_before_calib = rainfall;
+				XITC_Ui_Disk.command = eITC_Ui_Disk_Save_Params;
+				vTaskDelay(100 / portTICK_RATE_MS);
+				XITC_Ui_F968UART.signal = 1;
+				XITC_Ui_F968UART.command = eReset_Rf_Ui;
+				while(XITC_Ui_F968UART.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+
+				XITC_Ui_F968UART.calib_on = 1;
+				XITC_Ui_F968UART.calib_rf = 0;
+				iKey = eNo_Key;
+				iPosition  = 0;
+			}
+			else if (iKey == eBack_Key){
+				loop_active = 0;
+				iKey = eNo_Key;
+			}
+			else
+				iKey = eNo_Key;
+			iPosition = (iPosition+1)%(strlen(Ui_Scrolling_Lcd_Buf));
+			if(strlen(Ui_Scrolling_Lcd_Buf)>16){
+				if((strlen(Ui_Scrolling_Lcd_Buf)-iPosition)==16)
+						iPosition = 0;
+			}
+			break;
+
+		case eCalib_Rain:
+			strcpy(Ui_Scrolling_Lcd_Buf,   "               Checking Rainfall Calibration                 ");
+			sprintf(ui_lcd_disp_buf2, " Rain  =  %03d.%01d ", XITC_Ui_F968UART.calib_rf/2, ((XITC_Ui_F968UART.calib_rf%2)?5:0));
+			if(iPosition > strlen(Ui_Scrolling_Lcd_Buf))
+				iPosition = 0;
+
+			iKey = Ui_Disp_n_Get(iPosition, Ui_Scrolling_Lcd_Buf);
+			if(iKey == eSet_Key){
+				Cailb_Status_Details.date = xPresent_Date_Time.date;
+				Cailb_Status_Details.month = xPresent_Date_Time.month;
+				Cailb_Status_Details.year = xPresent_Date_Time.year;
+
+				if (XITC_Ui_F968UART.calib_rf == 10){
+					strcpy(Ui_Scrolling_Lcd_Buf,   "Calib  Success !  ");
+					Cailb_Status_Details.status = 1;
+				}
+				else{
+					strcpy(Ui_Scrolling_Lcd_Buf,   "Calib  Failed     ");
+					Cailb_Status_Details.status = 0;
+				}
+				XITC_Ui_Disk.command = eITC_Ui_Disk_Save_Params;
+				Ui_Calib_State = eCalib_Idle;	// first perform Rain Calibration
+				XITC_Ui_F968UART.calib_on = 0;
+				XITC_Ui_F968UART.signal = 1;
+				XITC_Ui_F968UART.command = eReset_Rf_Ui;
+				while(XITC_Ui_F968UART.signal)
+					vTaskDelay(10 / portTICK_RATE_MS);
+
+				XITC_Ui_F968UART.signal = 1;
+				XITC_Ui_F968UART.command = eAdd_Rf_Calib;
+				while(XITC_Ui_F968UART.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+
+				// show the status
+				XITC_Ui_Lcd.lcd_posn	= 0x80;
+				XITC_Ui_Lcd.lcd_cmd		= eLcd_Display;
+				sprintf(XITC_Ui_Lcd.disp_str, "%s", Ui_Scrolling_Lcd_Buf);
+				XITC_Ui_Lcd.sig = 1;
+				while (XITC_Ui_Lcd.sig)
+					vTaskDelay(10 / portTICK_RATE_MS);
+
+
+				vTaskDelay(5000 / portTICK_RATE_MS);
+				// record all the new params
+				// now quit
+				iKey = eNo_Key;
+				loop_active = 0;
+			}
+			else if (iKey == eBack_Key){
+				XITC_Ui_F968UART.calib_on = 0;
+				XITC_Ui_F968UART.signal = 1;
+				XITC_Ui_F968UART.command = eReset_Rf_Ui;
+				while(XITC_Ui_F968UART.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+
+				XITC_Ui_F968UART.signal = 1;
+				XITC_Ui_F968UART.command = eAdd_Rf_Calib;
+				while(XITC_Ui_F968UART.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+
+				iKey = eNo_Key;
+				loop_active = 0;
+			}
+			else
+				iKey = eNo_Key;
+			iPosition = (iPosition+1)%(strlen(Ui_Scrolling_Lcd_Buf));
+			if(strlen(Ui_Scrolling_Lcd_Buf)>16){
+				if((strlen(Ui_Scrolling_Lcd_Buf)-iPosition)==16)
+						iPosition = 0;
+			}
+
+			break;
+
+		default:
+			break;
+
+		}
+	}
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : vUi_Task
+ * 	DESCRIPTION : This function is used to run the Task for ever
+ * 					•	This task is designed for giving user interface. UI Task will be interacting between LCD Task and KBD Task.
+					•	UI Task is having following states :
+						1.	Welcome Screen ( it will display product details)
+						2.	Date time screen (we can edit the date time by using Key board).
+						3.	Rain fall details ( it will give present rainfall)
+						4.	Closed Rainfall ( it will give Closed(8.30) data rain fall of the date)
+						5.	Copy to USB (it will ask the from date to copy the data to USB).
+						6.	Params Display( it will give Station Id, Station name, Signal Level, SIM Status, Last Logged date, Network Error details, Calibration details,
+						Battery voltage, version,).
+						7.	Send status message to Universal GSM Number.
+						8.	Load new parameters by USB.
+						9.	Load new firmware by USB.
+*
+* 	VERSION : 1.5
+* 	ARGUMENTS : pvParameters
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : iUi_State, iUi_Step, iUi_State, XITC_Ui_Lcd.disp_str
+*	CALLED FUNCTION : main
+*	CALLING FUNCTION : xUi_Steps
+*
+
+/*----------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void vUi_Task(void *pvParameters)
+{
+	int i;
+
+	XITC_Ui_Lcd.sig = 0;
+	XITC_Ui_Rtc.signal = 0;
+	while(!kbd_task_started){
+		vTaskDelay(100 / portTICK_RATE_MS);
+	}
+
+	XITC_Ui_Disk.command = eITC_Ui_Disk_Nop;
+
+	iUi_State = eUi_Idle;	// make it display
+	iUi_Step = 0;
+	iUi_Timer_End = 1;
+
+	gUi_Active = 0;		// Assume UI is not active
+	deg_symbol = 0xdf; // degree symbol
+	per_symbol = 0x25; // % symbol
+	vTaskDelay(100 / portTICK_RATE_MS);
+	for(;;){
+
+		if(XITC_Kbd_Log.sig_key == 1){
+			iNew_Key_2b_Processed = XITC_Kbd_Log.key_value;
+		}
+
+
+		if ( ((iUi_Timer_End) || (iNew_Key_2b_Processed)) && (XITC_Ui_Lcd.sig == 0)) {
+			iUi_Timer_End = 0;
+			iUi_Step_Entry_No = 0;
+
+			// Let us get the correct step entry number now
+
+			if(iUi_State > eUi_Idle){
+				for (i = 0; i < iUi_State; i++)
+					iUi_Step_Entry_No += iUi_No_Of_Steps[i];
+			}
+			iUi_Step_Entry_No += iUi_Step; // now we have got the step
+			if(iUi_State == eUi_Welcome)
+				i = 0;
+			iUi_Key_for_match = xUi_Steps[iUi_Step_Entry_No].ikey;
+
+			if ((iUi_Key_for_match == WILD_KEY) || (iUi_Key_for_match == iNew_Key_2b_Processed)) {
+
+				ptr2function = xUi_Steps[iUi_Step_Entry_No].ptr2function;
+				ptr2function();
+
+				while (XITC_Ui_Lcd.sig);
+				// setup the lcd queue and send the same
+				XITC_Ui_Lcd.lcd_posn	= xUi_Steps[iUi_Step_Entry_No].uclcd_addr;
+				XITC_Ui_Lcd.lcd_cmd		= xUi_Steps[iUi_Step_Entry_No].uclcd_cmd;
+				sprintf(XITC_Ui_Lcd.disp_str, "%s", xUi_Steps[iUi_Step_Entry_No].ptr2_lcd_display_str);
+				XITC_Ui_Lcd.sig = 1;
+
+
+/*				if (xUi_Steps[iUi_Step_Entry_No].uclcd_cmd == eLcd_Cur_On) {
+					iLcd_Cur_Posn = xUi_Steps[iUi_Step_Entry_No].uclcd_addr;
+
+				}
+*/
+				if (xUi_Steps[iUi_Step_Entry_No].uclcd_cmd == eLcd_Set_Addr) {
+					XITC_Ui_Lcd.lcd_posn = iLcd_Cur_Posn;
+				}
+
+
+				if (iUi_Key_for_match == iNew_Key_2b_Processed){
+					iNew_Key_2b_Processed = 0;
+					XITC_Kbd_Log.sig_key = 0;
+				}
+				iUi_State = xUi_Steps[iUi_Step_Entry_No].iNext_State;
+				iUi_Step = xUi_Steps[iUi_Step_Entry_No].iNext_Step;
+
+				if (iUi_State == UI_RET) {
+					iUi_State = iUi_Ret_State;
+					iUi_Step = iUi_Ret_Step;
+				}
+
+				if (xUi_Steps[iUi_Step_Entry_No].iTc > 0) {
+					iUi_Timer_Tc = xUi_Steps[iUi_Step_Entry_No].iTc;
+				}
+			}
+			else {
+				iUi_Step++;
+				iUi_Step %= iUi_No_Of_Steps[iUi_State];
+				iUi_Timer_Tc = 1;
+			}
+		}
+
+		// scheduler last
+
+		if (iUi_Timer_Tc) {
+			iUi_Timer_Tc--;
+			if (iUi_Timer_Tc == 0)
+				iUi_Timer_End = 1;
+		}
+
+	/*	taskENTER_CRITICAL();
+		gi_wdt_task_ok_stat |= WDT_UI_OK;
+		taskEXIT_CRITICAL();
+*/
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+	}
+}
+

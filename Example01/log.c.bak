@@ -1,0 +1,549 @@
+#include "globals.h"
+#include "FreeRTOS.h"
+#include "rtc.h"
+#include "log.h"
+#include "task.h"
+#include "ui.h"
+#include "gprs.h"
+int rain, date, month, year, hour, minute, rec_hour, rec_minute;
+int sig_strength, humidity, temperature, wind_speed, wind_dir, depth;
+
+
+int get_last_rf_value(void);
+void reset_rf_and_store();
+void write_rtc_reg();
+
+/*-------------------------------------------------------------------------------------------------------------------*
+ * 	FUNCTION NAME : reset_rf_and_store
+ * 	DESCRIPTION : This function is used to give request to F968 for resetting the rainfall.
+ * 				Rainfall value and station Id will be stored in RTC registers.
+ * 	VERSION : 1.5
+ * 	ARGUMENTS : None
+ * 	RETURN VALUES : None
+ * 	GLOBALS INPUT : None
+ *	GLOBALS AFFECTED : Global_Data.rainfall, XITC_Log_RTC.date, XITC_Log_RTC.month, XITC_Log_RTC.year, XITC_Log_RTC.rf,XITC_Log_RTC.stn_id
+ *	CALLED FUNCTION : get_last_rf_value, vLog_Task
+ *	CALLING FUNCTION : None
+ *
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void reset_rf_and_store(){
+
+	gi_rf_before_calib = 0;
+
+	// Reset Rainfall
+	XITC_Log_F968UART.command = eReset_Rf;
+	XITC_Log_F968UART.signal = 1;
+	while(XITC_Log_F968UART.signal)
+		vTaskDelay(100 / portTICK_RATE_MS);
+	// write to rtc reg
+	XITC_Log_RTC.signature = 0x55AA6699;
+	XITC_Log_RTC.date = xPresent_Date_Time.date*(256*256*256)+
+			xPresent_Date_Time.month*(256*256) + xPresent_Date_Time.year;
+	XITC_Log_RTC.time = xPresent_Date_Time.hour*256 + xPresent_Date_Time.minute;
+
+	// extract the stn_id only
+	XITC_Log_RTC.stn_id = ((station_id[0] - '0')*100000)+((station_id[1] - '0')*10000)+((station_id[2] - '0')*1000)+((station_id[3] - '0')*100)+ ((station_id[4] - '0')*10) + (station_id[5] - '0');
+	Global_Data.rainfall = 0;
+	XITC_Log_RTC.rf = Global_Data.rainfall;
+	XITC_Log_RTC.command = RTC_REG_SET_CMD;
+	XITC_Log_RTC.signal = 1;
+	while (XITC_Log_RTC.signal)
+		vTaskDelay(20 / portTICK_RATE_MS);
+
+	// store in sdc also
+	XITC_Log_Disk.command = eCreate_Params;
+	XITC_Log_Disk.signal = 1;
+	while(XITC_Log_Disk.signal)
+		vTaskDelay(100 / portTICK_RATE_MS);
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+ * 	FUNCTION NAME : get_last_rf_value
+ * 	DESCRIPTION : It is used to find the last rainfall value of the day from RTC Registers.
+ * 	VERSION : 1.5
+ * 	ARGUMENTS : None
+ * 	RETURN VALUES : last_rf
+ * 	GLOBALS INPUT : None
+ *	GLOBALS AFFECTED : None
+ *	CALLED FUNCTION : vLog_Task
+ *	CALLING FUNCTION : reset_rf_and_store
+ *
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+int get_last_rf_value(void)
+{
+	int last_rf = 0, last_rec_hour, last_rec_minute, prev_rec_time, present_time;
+	int cur_date, cur_month, cur_year, cur_hour, cur_minute, prev_date, prev_month, prev_year;
+	cur_date		= xPresent_Date_Time.date;
+	cur_month		= xPresent_Date_Time.month;
+	cur_year		= xPresent_Date_Time.year;
+	cur_hour		= xPresent_Date_Time.hour;
+	cur_minute		= xPresent_Date_Time.minute;
+
+	prev_date		= cur_date;
+	prev_month		= cur_month;
+	prev_year		= cur_year;
+	Previous_Date(&prev_date, &prev_month, &prev_year);
+
+	XITC_Log_RTC.command = RTC_REG_GET_CMD;
+	XITC_Log_RTC.signal = 1;
+	while (XITC_Log_RTC.signal)
+		vTaskDelay(10 / portTICK_RATE_MS);
+
+	if (XITC_Log_RTC.signature != 0x55AA6699){
+		last_rf = 0;
+		gi_rf_before_calib = 0;
+		XITC_Log_Disk.command = eCreate_Params;
+		XITC_Log_Disk.signal = 1;
+		while(XITC_Log_Disk.signal)
+			vTaskDelay(100 / portTICK_RATE_MS);
+		// Reset and Store in IDT
+		reset_rf_and_store();
+	}
+	else{
+		sprintf(station_id, "%06d", XITC_Log_RTC.stn_id);
+		last_rf = XITC_Log_RTC.rf;
+		last_rec_hour = (XITC_Log_RTC.time>>8)&0xff;
+		last_rec_minute = (XITC_Log_RTC.time)&0xff;
+		if(cur_date == ((XITC_Log_RTC.date>>24)&0xff))
+			prev_rec_time = ((last_rec_hour*60)+last_rec_minute) + 1440;
+		else if(prev_date == ((XITC_Log_RTC.date>>24)&0xff))
+			prev_rec_time = ((last_rec_hour*60)+last_rec_minute);
+		else{
+			reset_rf_and_store();
+			last_rf = 0;
+		}
+
+		present_time = ((cur_hour*60)+cur_minute)+1440;
+		if(present_time > (1440+((gi_closing_hour*60)+gi_closing_minute))){
+			if(prev_rec_time < (1440+((gi_closing_hour*60)+gi_closing_minute))){
+				reset_rf_and_store();
+				last_rf = 0;
+			}
+		}
+		else{
+			if(prev_rec_time < 510){
+				reset_rf_and_store();
+				last_rf = 0;
+			}
+		}
+	}
+	return last_rf;
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+ * 	FUNCTION NAME : write_rtc_reg
+ * 	DESCRIPTION : This function will be called every log interval and used to store the last rainfall value
+ * 				date time and station id  in RTC registers.
+ * 	VERSION : 1.5
+ * 	ARGUMENTS : None
+ * 	RETURN VALUES : None
+ * 	GLOBALS INPUT : None
+ *	GLOBALS AFFECTED : Global_Data.rainfall, XITC_Log_RTC.date, XITC_Log_RTC.month, XITC_Log_RTC.year, XITC_Log_RTC.rf,XITC_Log_RTC.stn_id
+ *	CALLED FUNCTION : vLog_Task
+ *	CALLING FUNCTION : None
+ *
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void write_rtc_reg(void){
+	XITC_Log_RTC.signature = 0x55AA6699;
+	XITC_Log_RTC.date = xPresent_Date_Time.date*(256*256*256)+
+			xPresent_Date_Time.month*(256*256) + xPresent_Date_Time.year;
+	XITC_Log_RTC.time = xPresent_Date_Time.hour*256 + xPresent_Date_Time.minute;
+
+	XITC_Log_RTC.stn_id = ((station_id[0] - '0')*100000)+((station_id[1] - '0')*10000)+((station_id[2] - '0')*1000)+((station_id[3] - '0')*100)+ ((station_id[4] - '0')*10) + (station_id[5] - '0');
+
+	XITC_Log_RTC.rf = Global_Data.rainfall;
+	XITC_Log_RTC.command = RTC_REG_SET_CMD;
+	XITC_Log_RTC.signal = 1;
+	while (XITC_Log_RTC.signal)
+		vTaskDelay(100 / portTICK_RATE_MS);
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+ * 	FUNCTION NAME : vLog_Task
+ * 	DESCRIPTION : 	This function is used to run the task for ever
+ * 					This task mainly used for publishing data to GPRS Task and Disk Task.
+•					Initialization of global variables.
+•					Finding the last Rainfall value
+
+ * 	VERSION : 1.5
+ * 	ARGUMENTS : pvParameters
+ * 	RETURN VALUES : None
+ * 	GLOBALS INPUT : None
+ *	GLOBALS AFFECTED : Global_Data.rainfall, gi_signal_level, gi_last_rf, XITC_Log_Disk.record, XITC_Log_Gprs.data
+ *	CALLED FUNCTION : main
+ *	CALLING FUNCTION : get_last_rf_value, write_rtc_reg, reset_rf_and_store, auto_dump_flag
+ *
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void vLog_Task(void *pvParameters)
+{
+	char record[150];
+	char *src_ptr, *dest_ptr;
+	char ftp_data[96];
+
+	vTaskDelay(100 / portTICK_RATE_MS);
+	int cnt;
+	int alert_hour, alert_min, tot_sec;
+
+	XITC_Log_Disk.signal = 0;
+	XITC_Log_Gprs.signal = 0;
+
+	while((!disk_task_started)||(!rtc_task_started)){
+		vTaskDelay(100 / portTICK_RATE_MS);
+	}
+
+	log_interval = LOG_INTVL_DEFAULT;
+	report_interval = REP_INTVL_DEFAULT;
+
+	gi_closing_hour		= CLOSING_HR;
+	gi_closing_minute	= CLOSING_MIN;
+
+	// set up all parameters here
+
+	sprintf(station_id, "%s", "001060");
+	strcpy(station_name, "Bangalore");
+
+	//	strcpy(gc_http_server_name , "rtdas.ksndmc.net");
+	//	strcpy(gc_http_server_name , "27.34.245.67");
+
+	strcpy(gc_http_server_name , "rtdas.ksndmc.net");
+	strcpy(gc_ftp_server_name , "ftp1.ksndmc.net");
+
+	strcpy(gc_http_server_name2 , "rtdas.ksndmc.net");
+	//strcpy(gc_ftp_server_name_2 , "ftp.spatika.net");
+	strcpy(gc_ftp_server_name_2 , "dota.spatika.net");
+
+	strcpy(gc_http_link, "/trg_gprs/update_data_sit_v2");
+	strcpy(gc_http_link2, "/trg_gprs/update_data_sit_v2");
+
+	gi_com_module = sim900unit;
+	gi_server_port = 80;
+	gi_server_port_2 = 80;
+	gi_ftpserver_port = 21;
+	gi_ftpserver_port_2 = 21;
+
+	strcpy(gc_http_key, "sit1040");
+	strcpy(gc_http_key_2, "sit1040");
+
+	//tsr_trg@spatika.net ker12tsr
+	strcpy(gc_ftp_user_1, "trg_spatika_v2@ksndmc.net");
+	strcpy(gc_ftp_pwd_1, "trgsp#123");
+
+	strcpy(gc_ftp_user_2, "dota_dmc");
+	strcpy(gc_ftp_pwd_2, "airdata2016");
+
+	strcpy(gc_ftp_path_sim, "/");
+
+	//	strcpy(gc_apn_str , "airtelgprs.com");
+	strcpy(ISP_Params[0].svc, "+9198");
+	strcpy(ISP_Params[0].apn, "airtelgprs.com");
+	strcpy(ISP_Params[0].apn_user, "");
+	strcpy(ISP_Params[0].apn_pwd, "");
+	strcpy(ISP_Params[1].svc, "+9194");
+	strcpy(ISP_Params[1].apn, "bsnl.net");
+	strcpy(ISP_Params[1].apn_user, "");
+	strcpy(ISP_Params[1].apn_pwd, "");
+	strcpy(ISP_Params[2].svc, "+9198");
+	strcpy(ISP_Params[2].apn, "airtelgprs.com");
+	strcpy(ISP_Params[2].apn_user, "");
+	strcpy(ISP_Params[2].apn_pwd, "");
+	strcpy(ISP_Params[3].svc, "+9194");
+	strcpy(ISP_Params[3].apn, "bsnl.net");
+	//	strcpy(ISP_Params[3].apn, "	live.vodafone.com");
+
+	strcpy(ISP_Params[3].apn_user, "");
+	strcpy(ISP_Params[3].apn_pwd, "");
+
+	strcpy(gc_bearer_user_name, "");
+	strcpy(gc_bearer_user_pwd, "");
+	strcpy(gc_master_gsm, "+919980945474");	// customer number
+	strcpy(gc_universal_gsm, "+919980945474"); // company number
+	strcpy(gc_version_str,"TRG4-0.0.0");
+	strcpy(cur_version_str, "TRG4-3.0.8");
+
+	strcpy(network_name, "KSNDMC");
+	strcpy(station_type, "TRG");
+
+	gi_signal_level = 0;
+	gi_Depth_Sensor_Type = 5;	// used by ADC task
+	gi_Adc_Log_Intvl = 2;
+	gi_Depth = 0;
+	gi_Battery_Voltage = 0;
+	gi_sdc_error = 0;
+	reset_rf_ui = 0;
+	gi_ui_calib = 0;
+	gi_alert_pkt_recd = 0;
+	gi_data_logged = 0;
+	ftp_success = 0;
+	min_bv = 0;
+	max_bv = 0;
+	ref_bv = 0;
+	daily_data_cnt = 0;
+
+	set_sdc_err_flag = 0;
+	set_bat_err_flag = 0;
+
+	log_task_started = 1;
+
+	vTaskDelay(2000 / portTICK_RATE_MS);
+
+	XITC_Log_Disk.command = eGet_Params;
+	XITC_Log_Disk.signal = 1;
+	while(XITC_Log_Disk.signal)
+		vTaskDelay(100 / portTICK_RATE_MS);
+
+	/*	if(gi_disk_ok == 1){
+		XITC_Log_Disk.command = eGet_Params;
+		XITC_Log_Disk.signal = 1;
+		while(XITC_Log_Disk.signal)
+			vTaskDelay(100 / portTICK_RATE_MS);
+	}
+	else{
+		XITC_Log_Disk.command = eGet_Params;
+		XITC_Log_Disk.signal = 1;
+		if(XITC_Log_Disk.signal)
+			vTaskDelay(200 / portTICK_RATE_MS);
+		vTaskDelay(1000 / portTICK_RATE_MS);
+	}
+	 */
+
+	vTaskDelay(6000 / portTICK_RATE_MS);
+
+	//if((XITC_Log_Disk.result == eNo_File) || (strcmp(cur_version_str,gc_version_str) != 0)){
+	if(XITC_Log_Disk.result == eNo_File){
+
+		//strcpy(gc_version_str, cur_version_str);
+		// create the params file
+		if(gi_disk_ok == 1){
+			XITC_Log_Disk.command = eCreate_Params;
+			XITC_Log_Disk.signal = 1;
+			while(XITC_Log_Disk.signal)
+				vTaskDelay(100 / portTICK_RATE_MS);
+		}
+	}
+
+	gi_last_rf = get_last_rf_value();
+	if(Global_Data.rainfall < gi_last_rf){
+		XITC_Log_F968UART.command = eAdd_Rf;
+		XITC_Log_F968UART.signal = 1;
+		while(XITC_Log_F968UART.signal)
+			vTaskDelay(100 / portTICK_RATE_MS);
+	}
+
+	if((max_bv == 0) || (min_bv == 0)){
+		max_bv = Global_Data.bat_vol;
+		min_bv = Global_Data.bat_vol;
+		ref_bv = Global_Data.bat_vol;
+
+	}
+
+	for(;;){
+
+		taskENTER_CRITICAL();
+		gi_wdt_task_ok_stat |= WDT_LOG_OK;
+		taskEXIT_CRITICAL();
+		vTaskDelay(100 / portTICK_RATE_MS);
+
+		date = xPresent_Date_Time.date;
+		month = xPresent_Date_Time.month;
+		year = xPresent_Date_Time.year;
+		hour = xPresent_Date_Time.hour;
+		minute = xPresent_Date_Time.minute;
+
+
+		if(XITC_Gprs_Log.signal == 1){
+			if(XITC_Gprs_Log.command == eStore_Rtc_Reg){
+				write_rtc_reg();
+			}
+			XITC_Gprs_Log.signal = 0;
+		}
+
+		if (((XITC_RTC_Log.log_intvl_ovf == 1)&&(XITC_Log_Disk.signal != 1)) || (gi_alert_pkt_recd == 1)){
+
+			if(Global_Data.bat_vol < min_bv)
+				min_bv = Global_Data.bat_vol;
+
+			if(Global_Data.bat_vol > max_bv)
+				max_bv = Global_Data.bat_vol;
+
+			daily_data_cnt++;
+
+			log_task_finish = 0;
+			XITC_Log_Gprs.signal	= 0;
+
+			if(gi_gprs_module_ready){
+
+				// first send a request to gprs task for signal level
+				XITC_Log_Gprs.command	= eSig_Level;
+				XITC_Log_Gprs.data[0]	= 0;
+				XITC_Log_Gprs.signal	= 1;
+
+				for(cnt=0; cnt<8000; cnt++){
+					if(XITC_Log_Gprs.signal)
+						vTaskDelay(1 / portTICK_RATE_MS);
+				}
+				if(XITC_Log_Gprs.result == 1){
+					int sig_lvl;
+					sscanf(XITC_Log_Gprs.data, "+CSQ: %d", &sig_lvl);
+					sig_strength = sig_lvl*2 -1 -113;	// Please go through doc of Q24
+					gi_signal_level = sig_strength;
+
+				}
+			}
+
+
+			write_rtc_reg();
+
+			// prepare the data
+			// for storing in SD card
+			sprintf(record, "stn_no=%s,rec_time=%04d-%02d-%02d,%02d:%02d:00,rainfall=%03d.%1d,signal=%d,bat_vol=%02d.%02d\r\n",
+					station_id,
+					xPresent_Date_Time.year,
+					xPresent_Date_Time.month,
+					xPresent_Date_Time.date,
+					xPresent_Date_Time.hour,
+					(xPresent_Date_Time.minute/log_interval)*log_interval,
+					Global_Data.rainfall/2, ((Global_Data.rainfall%2)?5:0),
+					sig_strength,
+					((int)Global_Data.bat_vol * 100)/100, (int)(Global_Data.bat_vol * 100) % 100);
+
+			// for sending through HTTP
+			sprintf(XITC_Log_Gprs.data,
+					"stn_id=%s&rec_time=%04d-%02d-%02d,%02d:%02d&rainfall=%03d.%1d&signal=%04d&key=%s&bat_volt=%02d.%02d",
+					station_id,
+					xPresent_Date_Time.year,
+					xPresent_Date_Time.month,
+					xPresent_Date_Time.date,
+					xPresent_Date_Time.hour,
+					(xPresent_Date_Time.minute/log_interval)*log_interval,
+					Global_Data.rainfall/2, ((Global_Data.rainfall%2)?5:0),
+					sig_strength,
+					gc_http_key,
+					((int)Global_Data.bat_vol * 100)/100, (int)(Global_Data.bat_vol * 100) % 100);
+
+			// for storing in ftpdata.txt
+			sprintf(ftp_data,
+					"%s;%04d-%02d-%02d,%02d:%02d;%03d.%1d;%04d;%02d.%02d\r\n",
+					station_id,
+					xPresent_Date_Time.year,
+					xPresent_Date_Time.month,
+					xPresent_Date_Time.date,
+					xPresent_Date_Time.hour,
+					(xPresent_Date_Time.minute/log_interval)*log_interval,
+					Global_Data.rainfall/2, ((Global_Data.rainfall%2)?5:0),
+					sig_strength,
+					((int)Global_Data.bat_vol * 100)/100, (int)(Global_Data.bat_vol * 100) % 100);
+
+			// logging to disk
+			XITC_RTC_Log.log_intvl_ovf = 0;
+			XITC_Log_Disk.date = xPresent_Date_Time.date;
+			XITC_Log_Disk.month = xPresent_Date_Time.month;
+			XITC_Log_Disk.year = xPresent_Date_Time.year;
+			strcpy(XITC_Log_Disk.record, record);
+
+			XITC_Log_Disk.command = eLog;
+			XITC_Log_Disk.signal = 1;
+			while(XITC_Log_Disk.signal)
+				vTaskDelay(100 / portTICK_RATE_MS);
+
+			if(XITC_RTC_Log.rf_closing_time == 1){
+				// Reset and Store in IDT
+				reset_rf_and_store();
+				daily_data_cnt = 0;
+				XITC_RTC_Log.rf_closing_time = 2;
+			}
+
+			// sending to server by Http
+			XITC_Log_Gprs.signal	= 0;
+			XITC_Log_Gprs.server	= 0;
+			XITC_Log_Gprs.command	= eHttp;
+			XITC_Log_Gprs.result	= eXfer_In_Progress;
+			if(gi_gprs_module_ready)
+				XITC_Log_Gprs.signal	= 1;
+
+			// wait till both tasks are done
+			while((XITC_Log_Gprs.signal)||(XITC_Log_Disk.signal))
+				vTaskDelay(100 / portTICK_RATE_MS);
+
+			if ((XITC_Log_Gprs.result != eXfer_Success)||(!gi_gprs_module_ready)){		// http is not successful
+
+				XITC_Log_Disk.command = eStore_Ftp_Data;
+				strcpy(XITC_Log_Disk.record, ftp_data);
+				XITC_Log_Disk.signal = 1;
+				// only after writing FTP data is done, you can open the file
+				while(XITC_Log_Disk.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+
+				if(XITC_RTC_Log.rf_closing_time == 2){
+					auto_dump_flag = 1;
+					XITC_RTC_Log.rf_closing_time = 0;
+				}
+			}
+
+			// now set up gprs req for ftp xfer
+			XITC_Log_Gprs.signal	= 0;
+			XITC_Log_Gprs.server	= 0;
+			XITC_Log_Gprs.command	= eFtp;
+			if(gi_gprs_module_ready)
+				XITC_Log_Gprs.signal	= 1;
+			XITC_Log_Gprs.result	= eXfer_In_Progress;
+			// let us wait now for FTP to be over
+			while(XITC_Log_Gprs.signal)
+				vTaskDelay(200 / portTICK_RATE_MS);
+
+			//			if(XITC_Log_Gprs.result == eXfer_Success){
+			if((XITC_Log_Gprs.result == eXfer_Success) || (ftp_success == 1)){
+				ftp_success = 0;
+				// delete the file here
+				XITC_Log_Disk.command = eDelete_Ftp_File;
+				XITC_Log_Disk.signal = 1;
+				while(XITC_Log_Disk.signal)
+					vTaskDelay(100 / portTICK_RATE_MS);
+			}
+
+			else{
+				if(auto_dump_flag == 1){
+					auto_dump_flag = 0;
+					XITC_Log_Gprs.signal	= 0;
+					auto_dump_date  = xPresent_Date_Time.date;
+					auto_dump_month = xPresent_Date_Time.month;
+					auto_dump_year	= xPresent_Date_Time.year;
+					if(gi_gprs_module_ready)
+						XITC_Log_Gprs.signal	= 1;
+					XITC_Log_Gprs.command	= eAutodump;
+					while(XITC_Log_Gprs.signal)
+						vTaskDelay(100 / portTICK_RATE_MS);
+				}
+			}
+
+			auto_dump_flag = 0;   // 08:45 data missing
+
+			XITC_Log_Gprs.signal	= 0;
+			XITC_Log_Gprs.command	= eProcess_Msg;
+			if(gi_gprs_module_ready)
+				XITC_Log_Gprs.signal	= 1;
+			while(XITC_Log_Gprs.signal)
+				vTaskDelay(100 / portTICK_RATE_MS);
+
+			if((gi_disk_ok == 0) &&(gi_sdc_err_rpt == 1)){
+				set_sdc_err_flag = 1;
+				gi_sdc_err_rpt = 0;
+			}
+
+
+
+
+
+
+		}
+	}
+}

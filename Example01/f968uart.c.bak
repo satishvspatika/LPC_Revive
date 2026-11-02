@@ -1,0 +1,402 @@
+#include "f968uart.h"
+#include "globals.h"
+#include "lpc17xx_uart.h"
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_libcfg_default.h"
+#include "FreeRTOS.h"
+#include "lpc17xx_uart.h"
+#include "log.h"
+#include "rtc.h"
+#include "disk.h"
+#include "ui.h"
+char f968uart_data[100];
+int f968uart_in_count;
+char *f968_xmit_ptr;
+
+// local functions prototypes
+void define_f968uart_pins(LPC_UART_TypeDef* f968uart_port);
+void init_f968uart(LPC_UART_TypeDef* f968uart_port);
+void UART0_IRQHandler(void);
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : UART0_IRQHandler
+ * 	DESCRIPTION : This function is used for giving interrupt
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : None
+*	CALLED FUNCTION : it is call back function , when interrupt is occurred this function gets called automatically.
+*	CALLING FUNCTION : UART0_StdIntHandler
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void UART0_IRQHandler(void)
+{
+	UART0_StdIntHandler();
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : init_f968uart
+ * 	DESCRIPTION : This function is used for initializing UART.(i.e., setting baud rate, enable interrupt, setup ISR)
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : GPRS_PORT
+*	GLOBALS AFFECTED : None
+*	CALLED FUNCTION : vF968_Task
+*	CALLING FUNCTION : UART_ConfigStructInit, UART_InitStruct, UART_Init, UART_SetupCbs, UART_FIFOConfigStructInit, UART_FIFOConfig,
+*						UART_IntConfig, UART_TxCmd, NVIC_EnableIRQ.
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void init_f968uart(LPC_UART_TypeDef* f968uart_port)
+{
+	UART_CFG_Type UART_InitStruct;
+	UART_FIFO_CFG_Type UART_FIFOInitStruct;
+	UART_ConfigStructInit(&UART_InitStruct);
+	UART_InitStruct.Baud_rate = 9600;
+	UART_Init(f968uart_port, &UART_InitStruct);
+	UART_SetupCbs(f968uart_port, 0, &f968_recv_isr);
+	UART_SetupCbs(f968uart_port, 1, &f968_xmit_isr);
+	UART_FIFOConfigStructInit(&UART_FIFOInitStruct);
+	UART_FIFOConfig(f968uart_port, &UART_FIFOInitStruct);
+	UART_IntConfig(f968uart_port, UART_INTCFG_RBR, ENABLE);
+	UART_IntConfig(f968uart_port, UART_INTCFG_THRE, ENABLE);
+	UART_TxCmd(f968uart_port,ENABLE);
+	NVIC_EnableIRQ(UART0_IRQn);
+}
+
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : f968_recv_isr
+ * 	DESCRIPTION : This function is used for receiving the data via UART
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : f968uart_data, f968uart_in_count
+*	CALLED FUNCTION : init_f968uart
+*	CALLING FUNCTION : UART_ReceiveData
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void f968_recv_isr(void)
+{
+	f968uart_data[f968uart_in_count] = UART_ReceiveData((LPC_UART_TypeDef*) F968UART_PORT);
+	f968uart_in_count = (f968uart_in_count+1)%(sizeof(f968uart_data));
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : f968_xmit_isr
+ * 	DESCRIPTION : This function is used for transmitting the data via UART
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : f968_xmit_ptr
+*	CALLED FUNCTION : init_f968uart
+*	CALLING FUNCTION : UART_SendData
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void f968_xmit_isr(void)
+{
+	if(*f968_xmit_ptr){
+		UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr);
+		f968_xmit_ptr++;
+	}
+}
+
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : define_f968uart_pins
+ * 	DESCRIPTION : This function is used for initializing all UART pins
+* 	VERSION : 1.5
+* 	ARGUMENTS : None
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : None
+*	CALLED FUNCTION : vF968_Task
+*	CALLING FUNCTION : PINSEL_ConfigPin, GPIO_SetDir, GPIO_SetValue, GPIO_ClearValue
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void define_f968uart_pins(LPC_UART_TypeDef* f968uart_port)
+{
+	PINSEL_CFG_Type f968uart_config;
+
+	f968uart_config.OpenDrain = 0;
+	f968uart_config.Pinmode = 0;
+	f968uart_config.Funcnum = 1;
+	f968uart_config.Pinnum = F968UART_TX_PIN;
+	f968uart_config.Portnum = 0;
+	PINSEL_ConfigPin(&f968uart_config);
+	f968uart_config.Pinnum = F968UART_RX_PIN;
+	PINSEL_ConfigPin(&f968uart_config);
+
+}
+
+/*-------------------------------------------------------------------------------------------------------------------*
+* 	FUNCTION NAME : vF968_Task
+ * 	DESCRIPTION : Functionalities:
+					•	This task mainly used for communication between F968 and LPC
+					•	Receive the Rainfall data from F968 to LPC
+					•	Send request from LPC to F968. It is used for Reset RF, Add Rf, Shutdown the Power
+* 	VERSION : 1.5
+* 	ARGUMENTS : pvParameters
+* 	RETURN VALUES : None
+* 	GLOBALS INPUT : None
+*	GLOBALS AFFECTED : 	 Global_Data.rainfall, Global_Data.bat_vol, Global_Data.f968_version, Global_Data.G_on_Off, Global_Data.U_on_off,
+*						 Global_Data.B_on_off
+*	CALLED FUNCTION : main
+*	CALLING FUNCTION : define_f968uart_pins, init_f968uart, Send_And_Check_Gprs, getline_f968uart.
+*
+
+/*---------------------------------------------------------------------------------------------------------------------*/
+
+void vF968_Task( void *pvParameters)
+{
+	// define the buffers and the pointers used by gps task and gps isr
+
+	char f968uart_loc_buf[100];
+	int f968uart_out_count, locbuf_in_count, locbuf_out_count;
+	char *match_ptr;
+	int sim_800_on;
+	int lf_recd;
+	f968uart_data[0] = 0;
+	f968uart_in_count = f968uart_out_count = locbuf_in_count = locbuf_out_count =0;
+	lf_recd = 0;
+	int rf, temp, humi, ws_tot, wd, bat_vol, time_gone, inst_ws;
+	char g_status, u_status, b_status, xmit_loc_buf[80];
+	char f968_version[4];
+	int alert_packet;
+	int timeout;
+	int tx_result;
+	int line_count;
+	alert_packet = 0;
+	// startup delay
+	vTaskDelay(500 / portTICK_RATE_MS);
+	// first pins of gps-uart
+	define_f968uart_pins((LPC_UART_TypeDef*) F968UART_PORT);
+
+	vTaskDelay(100 / portTICK_RATE_MS);
+	// next registers of gps-uart
+	init_f968uart((LPC_UART_TypeDef*) F968UART_PORT);
+
+	vTaskDelay(100 / portTICK_RATE_MS);
+	sim_800_on = 1;
+	line_count = 0;
+
+	del_fw_file = 0;
+	firmware_copied = 0;
+
+	for(;;){
+		if(gUi_Active)
+			vTaskDelay(500 / portTICK_RATE_MS);
+		else
+			vTaskDelay(100 / portTICK_RATE_MS);
+		// let us get one line from the isr buffer
+		locbuf_in_count = 0;
+		while((lf_recd=getline_f968uart( f968uart_data, f968uart_loc_buf, &f968uart_in_count, &f968uart_out_count,
+			&locbuf_in_count, sizeof(f968uart_data), LINE_FEED)) != 1){
+			vTaskDelay(5 / portTICK_RATE_MS);
+		}
+
+		// now let us see if we have got Data packet
+		match_ptr = look_for_str(f968uart_loc_buf, "$D");
+		if (match_ptr != 0)
+		{
+			// decode all values here...
+			sscanf(match_ptr, "$D%d,%d,%c,%c,%s", &rf, &bat_vol, &g_status, &u_status, &f968_version);
+
+			// rainfall
+			if(XITC_Ui_F968UART.calib_on == 1){
+				XITC_Ui_F968UART.calib_rf = rf;
+			}
+			else
+				Global_Data.rainfall = rf ;
+
+			// Battery voltage
+	//		Global_Data.bat_vol = (((float)(bat_vol) * 3.1/1024) * 7.2);       // 720/100 = 7.2... // 3.1 is F968 voltage
+																	// 1024 is 10 bit adc value 2^10
+
+			//r1=620k r2=100k  r2/(r1+r2)
+			//Reference Voltage giving for LPC824 is 3.3
+
+			// 100/(620+100) = 0.138
+			Global_Data.bat_vol = ((((float)(bat_vol) * 3.3/4095)/0.138));
+			Global_Data.bat_vol += 0.3;
+
+			sprintf(Global_Data.f968_version,f968_version);
+
+			// power supply ON (or) OFF Details
+			Global_Data.G_on_Off = g_status;
+			Global_Data.U_on_off = u_status;
+		 }
+
+		if(XITC_Log_F968UART.signal == 1){
+
+			// Reset Rainfall
+			if(XITC_Log_F968UART.command == eReset_Rf){
+				sprintf(xmit_loc_buf, "$r\012");
+				f968_xmit_ptr = xmit_loc_buf;
+				UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+				vTaskDelay(500 / portTICK_RATE_MS);
+				XITC_Log_F968UART.signal = 0;
+			}
+
+			// shutdown power all
+			if((XITC_Log_F968UART.command == eLog_Finish) && (!gUi_Active)){
+				int time;
+				time = ((log_interval-3) - (xPresent_Date_Time.minute % log_interval)) + '0';
+				sprintf(xmit_loc_buf, "$f7%c\012", (char)time);
+				f968_xmit_ptr = xmit_loc_buf;
+				UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+				vTaskDelay(500 / portTICK_RATE_MS);
+				XITC_Log_F968UART.signal = 0;
+			}
+
+			if(XITC_Log_F968UART.command == eAdd_Rf){
+				sprintf(xmit_loc_buf, "$R%04d\012", gi_last_rf);
+				f968_xmit_ptr = xmit_loc_buf;
+				UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+				vTaskDelay(500 / portTICK_RATE_MS);
+				XITC_Log_F968UART.signal = 0;
+			}
+		}
+
+
+
+		if(gUi_Active) {
+			// turn on 5v
+			if (Global_Data.U_on_off == 'u'){
+				sprintf(xmit_loc_buf, "$n4\012");
+				f968_xmit_ptr = xmit_loc_buf;
+				UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+				vTaskDelay(500 / portTICK_RATE_MS);
+			}
+		}
+
+		else if (Global_Data.U_on_off == 'U'){
+			// turn off 5v
+			sprintf(xmit_loc_buf, "$f4\012");
+			f968_xmit_ptr = xmit_loc_buf;
+			UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+			vTaskDelay(500 / portTICK_RATE_MS);
+		}
+
+
+		if(firmware_copied == 1){
+			 XITC_F968UART_Disk.command = eFile_Fw_File_Open;
+			 XITC_F968UART_Disk.data[0] = 0;
+			 XITC_F968UART_Disk.signal = 1;
+			 while(XITC_F968UART_Disk.signal)
+				vTaskDelay(30 / portTICK_RATE_MS);
+
+			if(XITC_F968UART_Disk.result == eFw_File_Not_Found){
+				XITC_Log_Gprs.result = eFw_No_File;
+			}
+			firmware_copied = 0;
+		}
+
+		if(XITC_F968UART_Disk.result == eFw_File_Opened){
+			if(XITC_F968UART_Disk.result != eFw_File_End){
+				while(1){
+				 // read line by line
+					XITC_F968UART_Disk.command = eFw_File_Get_Line;
+					XITC_F968UART_Disk.data[0] = 0;
+				//	XITC_F968UART_Disk.result = eFw_Line_Read_In_Progress;
+					XITC_F968UART_Disk.signal = 1;
+					while (XITC_F968UART_Disk.signal)
+						vTaskDelay(10 / portTICK_RATE_MS);
+
+					//f968_xmit_ptr = XITC_F968UART_Disk.data;
+					//sprintf(xmit_loc_buf, "$WXITC_F968UART_Disk.data\012");
+
+			 		sprintf(xmit_loc_buf, "$W%s",XITC_F968UART_Disk.data);
+					f968_xmit_ptr = xmit_loc_buf;
+					UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+					vTaskDelay(50 / portTICK_RATE_MS);
+
+					if(line_count == 0){
+						vTaskDelay(5000 / portTICK_RATE_MS);
+						line_count++;
+					}
+
+					timeout = 1000;
+
+					while(((lf_recd=getline_f968uart( f968uart_data, f968uart_loc_buf, &f968uart_in_count, &f968uart_out_count,
+						&locbuf_in_count, sizeof(f968uart_data), LINE_FEED)) != 1)){
+						vTaskDelay(10 / portTICK_RATE_MS);
+						timeout--;
+						if(!timeout)
+							break;
+					}
+
+					if((match_ptr = look_for_str(f968uart_loc_buf, "$POK")) != 0 ){
+						tx_result = eLine_Tx_Success;
+					}
+
+					if((match_ptr = look_for_str(f968uart_loc_buf, "$PERROR")) != 0 ){
+						tx_result = eLine_Tx_failure;
+					}
+
+
+				    if((XITC_F968UART_Disk.result == eFw_File_End) || (tx_result == eLine_Tx_failure)){
+
+				    	XITC_F968UART_Disk.command = eFW_File_Close;
+						 XITC_F968UART_Disk.signal = 1;
+						 while(XITC_F968UART_Disk.signal)
+							vTaskDelay(10 / portTICK_RATE_MS);
+
+				    	XITC_F968UART_Disk.command = eFw_Del_Dota_File;
+						 XITC_F968UART_Disk.signal = 1;
+						 while(XITC_F968UART_Disk.signal)
+							vTaskDelay(10 / portTICK_RATE_MS);
+
+						sprintf(xmit_loc_buf, "$W#\012",XITC_F968UART_Disk.data);
+						f968_xmit_ptr = xmit_loc_buf;
+						UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+						vTaskDelay(50 / portTICK_RATE_MS);
+
+						  break;
+				    }
+				}
+			}
+		}
+
+		// Reset Rainfall cmd for calibration
+		if(XITC_Ui_F968UART.signal == 1){
+			if(XITC_Ui_F968UART.command == eReset_Rf_Ui){
+				sprintf(xmit_loc_buf, "$r\012");
+				f968_xmit_ptr = xmit_loc_buf;
+				UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+				vTaskDelay(500 / portTICK_RATE_MS);
+			}
+			if(XITC_Ui_F968UART.command == eAdd_Rf_Calib){
+				sprintf(xmit_loc_buf, "$R%04d\012", gi_rf_before_calib);
+				f968_xmit_ptr = xmit_loc_buf;
+				UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+				vTaskDelay(500 / portTICK_RATE_MS);
+			}
+			if(XITC_Ui_F968UART.command == eBat_Charge){
+				sprintf(xmit_loc_buf, "$C\012");
+				f968_xmit_ptr = xmit_loc_buf;
+				UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+			}
+			if(XITC_Ui_F968UART.command == eBat_Cutoff){
+				sprintf(xmit_loc_buf, "$c\012");
+				f968_xmit_ptr = xmit_loc_buf;
+				UART_SendData((LPC_UART_TypeDef*) F968UART_PORT, *f968_xmit_ptr++);
+			}
+
+			XITC_Ui_F968UART.signal = 0;
+		}
+	}
+}

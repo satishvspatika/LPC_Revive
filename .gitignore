@@ -1,0 +1,50 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Eclipse / MCUXpresso workspace metadata & local runtime state
+.metadata/
+*.dSYM/
+
+# Intermediate build objects and compiler dependencies
+*.o
+*.obj
+*.d
+*.dis
+*.lst
+*.crf
+
+# Temporary editor and log files
+*.swp
+*.swo
+*~
+*.tmp
+*.log
+
+# Large debug executables & old test binaries
+test_old_lpc845.axf
+LPC845/build_v2/
+
+# Explicitly ensure linker scripts and makefiles in Debug directories are tracked
+!Example01/Debug/*.ld
+!Example01/Debug/makefile
+!Example01/Debug/*.mk
+!LPC845/Debug/*.ld
+!LPC845/Debug/makefile
+!LPC845/Debug/*.mk
+
+# Keep standalone boot stub artifacts
+!Example01/Debug/boot_stub.bin
+!Example01/Debug/boot_stub.hex
+!Example01/Debug/boot_stub.elf
+
+# Keep verified production flash images (used by flash_lpc1768.sh and flash_lpc845.sh)
+!Example01/Debug/LPC1768_TWS_FULL.hex
+!Example01/Debug/LPC1768_TWS_FULL.bin
+!LPC845/LPC845_TWS.hex
+!LPC845/LPC845_TWS.bin
