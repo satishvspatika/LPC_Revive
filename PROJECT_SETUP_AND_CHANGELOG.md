@@ -306,6 +306,16 @@ To effortlessly synchronize changes between your development laptop and office c
   3. Handled historical tag transitions: automatically avoids untracked collision before `git checkout tags/<tag>`, restores local scripts, and marks them `--skip-worktree`. Switching back to `main` restores scripts cleanly and keeps working directory clean.
   4. Wrapped both scripts in bash `main() { ... }; main "$@"` so the interpreter loads the entire script in memory, eliminating EOF/offset corruption if disk files are modified mid-run.
 
+### 16. Standalone Toolchain Auto-Detection & `yr` Declaration Fix (`v1.0.6`)
+- **Problem**:
+  1. Running `./build_all.sh` on machines without MCUXpresso IDE installed exited with error 127 (`arm-none-eabi-gcc not found`), preventing local compilation verification before pushing commits.
+  2. In `Example01/gprs.c:prepare_present_rec_for_http_sms()`, `yr` was used without declaration, breaking compilation.
+- **Fix**:
+  1. Declared and sanitized `int yr = (xPresent_Date_Time.year >= 2000) ? xPresent_Date_Time.year : (xPresent_Date_Time.year > 0 ? (2000 + xPresent_Date_Time.year) : 2026);` in `Example01/gprs.c`.
+  2. Added workspace `tools/arm-toolchain/bin/arm-none-eabi-gcc` auto-detection to `Example01/build.sh` and `LPC845/build.sh` so full C compilation verification runs natively on any machine.
+  3. Added `tools/` to `.gitignore` so local compilers remain excluded from Git tracking.
+
+
 
 ---
 
