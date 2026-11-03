@@ -1785,6 +1785,7 @@ int connect_http1(){
 	}
 	else {
 		sd_log_http("NET: IP address query failed");
+		Send_And_Check_Gprs("AT+NETCLOSE\r\n", "OK", "ERROR", 2000);
 		return(-1);
 	}
 }
@@ -1825,6 +1826,11 @@ int http_open_tcp(char *server, int port) {
 				&response_in_count, RECVBUF_SIZE, LINE_FEED)) != 1) && timeout) {
 			vTaskDelay(10 / portTICK_RATE_MS);
 			timeout--;
+			if ((timeout % 100) == 0) {
+				taskENTER_CRITICAL();
+				gi_wdt_task_ok_stat |= WDT_GPRS_OK;
+				taskEXIT_CRITICAL();
+			}
 		}
 		if (lf_recd) {
 			char *p_open = look_for_str(gprs_response, "+CIPOPEN: 0,");
@@ -1854,9 +1860,10 @@ int http_open_tcp(char *server, int port) {
 }
 
 int http_send_data_single(char *server, int port, char *path) {
-	char http_data[512];
+	static char http_data[1024];
 	char http_response[300];
 	char log_tmp[160];
+	char formatted_path[128];
 	int i, lf_recd, timeout, dest_in_count, http_xfer_result;
 	char *matching_ptr;
 
@@ -1904,10 +1911,26 @@ int http_send_data_single(char *server, int port, char *path) {
 	}
 	vTaskDelay(10 / portTICK_RATE_MS);
 
-	sprintf(http_data, "POST %s HTTP/1.1\r\n", path);
-	sprintf(http_data, "%sHost: %s\r\n", http_data, 
-		(strcmp(server, "117.216.42.181") == 0 || strcmp(server, "144.91.104.105") == 0) ? 
-		Global_Data_Params.gc_http_server_name1 : server);
+	/* Ensure path starts with leading slash for RFC compliant HTTP/1.1 */
+	if (path != NULL && path[0] == '/') {
+		strncpy(formatted_path, path, sizeof(formatted_path) - 1);
+	} else if (path != NULL) {
+		snprintf(formatted_path, sizeof(formatted_path), "/%s", path);
+	} else {
+		strcpy(formatted_path, "/");
+	}
+	formatted_path[sizeof(formatted_path) - 1] = 0;
+
+	sprintf(http_data, "POST %s HTTP/1.1\r\n", formatted_path);
+	if (port == 80) {
+		sprintf(http_data, "%sHost: %s\r\n", http_data, 
+			(strcmp(server, "117.216.42.181") == 0 || strcmp(server, "144.91.104.105") == 0) ? 
+			Global_Data_Params.gc_http_server_name1 : server);
+	} else {
+		sprintf(http_data, "%sHost: %s:%d\r\n", http_data, 
+			(strcmp(server, "117.216.42.181") == 0 || strcmp(server, "144.91.104.105") == 0) ? 
+			Global_Data_Params.gc_http_server_name1 : server, port);
+	}
 	strcat(http_data, "Connection: close\r\n");
 #if (UNIT_CFG == CFG_BIHAR_TRG)
 	strcat(http_data, "Content-Type: application/json\r\n");
@@ -1918,7 +1941,7 @@ int http_send_data_single(char *server, int port, char *path) {
 	strcat(http_data, gc_http_data);
 	strcat(http_data, "\032");
 
-	sprintf(log_tmp, "HTTP: POST %s (Len: %d)", path, strlen(gc_http_data));
+	sprintf(log_tmp, "HTTP: POST %s (Len: %d)", formatted_path, strlen(gc_http_data));
 	sd_log_http(log_tmp);
 	sd_log_http("HTTP: Payload ->");
 	sd_log_http(gc_http_data);
@@ -1927,6 +1950,13 @@ int http_send_data_single(char *server, int port, char *path) {
 		http_response[i]=0;
 	gprs_xmit_ptr = http_data;
 	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
+
+	/* Wait until UART ISR finishes transmitting entire payload including 0x1A */
+	int tx_wait = 200;
+	while (*gprs_xmit_ptr && tx_wait > 0) {
+		vTaskDelay(5 / portTICK_RATE_MS);
+		tx_wait--;
+	}
 	vTaskDelay(20 / portTICK_RATE_MS);
 
 	dest_in_count = 0;
@@ -1939,6 +1969,11 @@ int http_send_data_single(char *server, int port, char *path) {
 				&dest_in_count, RECVBUF_SIZE, LINE_FEED)) != 1) && (timeout)) {
 			vTaskDelay(10 / portTICK_RATE_MS);
 			timeout--;
+			if ((timeout % 100) == 0) {
+				taskENTER_CRITICAL();
+				gi_wdt_task_ok_stat |= WDT_GPRS_OK;
+				taskEXIT_CRITICAL();
+			}
 		}
 
 		if(lf_recd){
@@ -1973,7 +2008,8 @@ int http_send_data_single(char *server, int port, char *path) {
 				}
 			}
 			if((matching_ptr = look_for_str(http_response, "Success")) != 0 || 
-			   (matching_ptr = look_for_str(http_response, "SUCCESS")) != 0){
+			   (matching_ptr = look_for_str(http_response, "SUCCESS")) != 0 ||
+			   (matching_ptr = look_for_str(http_response, "success")) != 0){
 				http_xfer_result = eXfer_Success;
 				http_status  = 1;
 				gi_http_error = 0;
@@ -1999,6 +2035,10 @@ int http_send_data_single(char *server, int port, char *path) {
 			}
 			else
 				vTaskDelay(10 / portTICK_RATE_MS);
+
+			/* Reset line buffer and index for the next line */
+			dest_in_count = 0;
+			http_response[0] = 0;
 		}
 	}
 

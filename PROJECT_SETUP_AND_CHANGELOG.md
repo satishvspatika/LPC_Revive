@@ -259,6 +259,22 @@ To effortlessly synchronize changes between your development laptop and office c
 - **Problem**: KSNDMC endpoints expect `stn_no=...` while Spatika and others expect `stn_id=...`. `gc_http_data` was only 150 bytes in `Example01/memory.h`, risking overflow.
 - **Fix**: Expanded `gc_http_data` to 256 bytes in `Example01/memory.h`. Formats both `stn_no=%s&stn_id=%s` in both `prepare_http_record` and `prepare_present_rec_for_http_sms`.
 
+### 13. HTTP Flow Hardening & Buffer Corruption Elimination (`v1.0.3`)
+- **Problem**:
+  1. In `http_send_data_single()`, `dest_in_count` was initialized to 0 outside the response receiving loop, but was never reset inside `if (lf_recd)`. As HTTP headers (Status, Date, Server, Content-Type, etc.) were received line-by-line, each line was appended to `http_response[300]`. Once the total character count exceeded 300 bytes, `getline()` wrapped around (`(loc_in_count_dest + 1) % 300`) and corrupted earlier characters in `http_response`, causing subsequent string searches (`Date:`, `Success`, `200 OK`) to fail or match garbage.
+  2. `vWDT_Task` checks task heartbeats every 10 seconds. In weak cellular conditions, TCP opening (`http_open_tcp`) and HTTP response waits (`http_send_data_single`) could wait up to 25–30 seconds without feeding `gi_wdt_task_ok_stat |= WDT_GPRS_OK;`, risking watchdog reset.
+  3. `http_data` was a 512-byte local array on the FreeRTOS task stack. `vGprs_Task` stack is 1300 words; allocating 512 bytes on the stack left little headroom and risked data corruption while the asynchronous UART THRE ISR streamed bytes.
+  4. Transmission of `http_data` via UART2 THRE interrupt takes ~35 ms at 115200 baud for a 400-byte POST request. The original code waited only 20 ms before reading responses, risking reading modem echo as response data.
+  5. If `AT+IPADDR` failed during `connect_http1()`, the bearer was left dangling, locking subsequent `AT+NETOPEN` commands into `+IP ERROR: Network is already opened`.
+- **Fix**:
+  1. Added `dest_in_count = 0; http_response[0] = 0;` inside `if (lf_recd)` immediately after processing each line. Each received line is now parsed and logged independently without buffer accumulation or wrapping.
+  2. Added periodic `gi_wdt_task_ok_stat |= WDT_GPRS_OK;` feeds every 1 second (100 ticks) in both `http_open_tcp()` and `http_send_data_single()` wait loops.
+  3. Made `http_data` `static char http_data[1024];` in BSS memory, saving stack space and guaranteeing memory validity throughout ISR streaming.
+  4. Added `while (*gprs_xmit_ptr && tx_wait > 0)` wait loop after `UART_SendData(...)` to guarantee all bytes and `0x1A` (Ctrl-Z) are loaded and flushed by the UART hardware before awaiting the modem's response.
+  5. Added defensive path check ensuring `formatted_path` begins with `/` for strict HTTP/1.1 RFC compliance.
+  6. Added case-insensitive `"success"` check alongside `"Success"` and `"SUCCESS"`.
+  7. Added `Send_And_Check_Gprs("AT+NETCLOSE\r\n", "OK", "ERROR", 2000);` if `AT+IPADDR` fails in `connect_http1()`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
@@ -277,4 +293,6 @@ To effortlessly synchronize changes between your development laptop and office c
 | **Passing `"OK"` as `nack` parameter in `AT+NETOPEN`** | `AT+NETOPEN` responds `OK` immediately before sending `+NETOPEN: 0`. Passing `"OK"` as `nack` falsely triggers error handling. | Pass `nack = "ERROR"` and check for `+NETOPEN: 0` or `"already opened"`. |
 | **Formatting `AT+CIPSEND=0,\r\n` with trailing comma** | SIM7600 returns `ERROR` on trailing comma syntax when no length parameter is provided. | Use `AT+CIPSEND=0\r\n` without trailing comma. |
 | **Hardcoding non-existent fallback IPs (`144.91.104.105:80`) for KSNDMC** | Hangs HTTP transmission for 25 seconds on Airtel IoT private APNs. | Use KSNDMC primary domain name first, then fallback to `117.216.42.181:80`. |
+| **Not resetting `dest_in_count` between response lines** | Multi-line HTTP headers exceed 300 bytes, wrapping around in `http_response` and corrupting `Date:`, `200 OK`, or `Success` matches. | Reset `dest_in_count = 0; http_response[0] = 0;` inside `if (lf_recd)` after each line. |
+| **Omitting FreeRTOS WDT feed during 25–30s modem waits** | `vWDT_Task` checks task health every 10 seconds. Un-fed waits in `http_open_tcp` or response polling trip watchdog resets. | Feed `gi_wdt_task_ok_stat |= WDT_GPRS_OK;` periodically inside timeout loops. |
 
