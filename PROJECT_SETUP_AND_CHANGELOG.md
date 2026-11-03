@@ -434,12 +434,24 @@ To effortlessly synchronize changes between your development laptop and office c
      - In `Example01/ui.c`, updated the 60-second inactivity timeout to call `system_enter_sleep()` directly.
   4. Bumped firmware version strings to `TWS6-1.0.13`.
 
+### 25. Complete Elimination of Legacy 2013 FTP Fallback on Failed HTTP & Standby Slot Clarification (`v1.0.14`)
+- **Problem**:
+  1. In `v1.0.13`, if an HTTP telemetry transmission failed (`http_status == 0`), the code fell into an `else` branch containing an obsolete 2013 FTP fallback loop that attempted `connect_ftp1()` to `ftp1.ksndmc.net`.
+  2. Because `ftp1.ksndmc.net` is unreachable, `AT+CFTPSSTART` waited 70 seconds and `AT+CFTPSLOGIN` waited 45 seconds (over 2 minutes wasted).
+  3. During this delay, the modem remained powered with the `NETLIGHT` LED pulsing, and if a timeout occurred or the task hung, modem power-down (`AT+CPOF`) and sleep entry were postponed or missed entirely.
+  4. In KSNDMC TWS stations, telemetry is 100% HTTP-based. Any unsent record remains stored in Flash and is automatically picked up and sent by `process_http_backlogs()` on subsequent 15-minute slots. An FTP fallback for 15-min data is completely redundant.
+- **Fix**:
+  1. **Purged Legacy FTP Loop**: Completely removed the 158-line FTP fallback block from `vGprs_Task` in `Example01/gprs.c`.
+  2. **Deterministic Modem Power-Down & Sleep**: Regardless of whether HTTP transmission succeeds or fails, the firmware now deterministically executes `AT+CIPCLOSE=0` -> `AT+NETCLOSE` -> `AT+CPOF` to power off the SIM7600 RF engine (shutting off the `NETLIGHT` LED) and immediately triggers `sleep_mode = 1` -> `system_enter_sleep()` to cut power rails via the LPC845.
+  3. Bumped firmware version strings to `TWS6-1.0.14`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
 | :--- | :--- | :--- |
+| **Attempting FTP fallback when HTTP telemetry fails** | `ftp1.ksndmc.net` is unreachable; waiting for FTP timeouts wastes 2+ minutes, delays sleep, and leaves the modem NETLIGHT pulsing. In TWS, all transmission is HTTP; failed samples are resent via HTTP backlog on the next slot. | Completely eliminate 15-min FTP fallbacks. On HTTP completion (success or failure), immediately close sockets, shut down the modem with `AT+CPOF`, and enter deep sleep. |
 | **Running FTP loops unconditionally after successful HTTP** | Hangs transmission for minutes trying to connect to FTP1 even when HTTP transmission already succeeded. | Skip legacy FTP loops entirely when `http_status == 1`. |
 | **Not closing PDP context (`AT+NETCLOSE`) and modem baseband (`AT+CPOF`) before sleep** | Keeps SIM7600 powered with NETLIGHT LED blinking fast continuously, draining power. | Always execute `AT+CIPCLOSE=0`, `AT+NETCLOSE`, and `AT+CPOF` upon telemetry completion before sleeping. |
 | **Gating `system_enter_sleep()` or `$f7;\012` power rail shutdown behind `!gUi_Active`** | If the operator touched a key or LCD activated, `gUi_Active` remains set, preventing LPC845 power rail shutdown and causing LPC1768 and modem to stay powered on continuously. | Unconditionally call `system_enter_sleep()` on `sleep_mode == 1`, dispatch `$f7;\012` on `shutdown_pwr == 1`, and trigger `system_enter_sleep()` on 60s UI inactivity. |
