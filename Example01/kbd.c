@@ -31,13 +31,13 @@ void init_kbd_pins(void)
 	KBD_config.Pinmode   = PINSEL_PINMODE_PULLUP;
 	KBD_config.OpenDrain = PINSEL_PINMODE_NORMAL;
 
-	// for row 0 pin (P3.26)
+	// for row 0 pin (P3.25)
 	KBD_config.Portnum   = KBD_ROW0_PORT;
 	KBD_config.Pinnum    = KBD_ROW0_PINNO;
 	PINSEL_ConfigPin(&KBD_config);
 	GPIO_SetDir(KBD_ROW0_PORT, KBD_ROW0_MASK, DIR_OUT);
 
-	// for row 1 pin (P3.25)
+	// for row 1 pin (P3.26)
 	KBD_config.Portnum   = KBD_ROW1_PORT;
 	KBD_config.Pinnum    = KBD_ROW1_PINNO;
 	PINSEL_ConfigPin(&KBD_config);
@@ -127,16 +127,16 @@ void kbd_release_pins_for_sleep(void)
 void Output_Row(int iRow)
 {
 	// set all row pins to logic high first
-	LPC_GPIO3->FIOSET = ((1UL << 25) | (1UL << 26));
-	LPC_GPIO1->FIOSET = (1UL << 21);
+	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
+	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
 
 	// now drive a logic zero on the selected row only
 	if (iRow == 0)
-		LPC_GPIO3->FIOCLR = (1UL << 26);
+		LPC_GPIO3->FIOCLR = KBD_ROW0_MASK;
 	else if (iRow == 1)
-		LPC_GPIO3->FIOCLR = (1UL << 25);
+		LPC_GPIO3->FIOCLR = KBD_ROW1_MASK;
 	else if (iRow == 2)
-		LPC_GPIO1->FIOCLR = (1UL << 21);
+		LPC_GPIO1->FIOCLR = KBD_ROW2_MASK;
 }
 
 /*-------------------------------------------------------------------------------------------------------------------*
@@ -166,8 +166,8 @@ int Read_Col_Pressed(void) {
 		iCol_Number = 1;
 
 	// set all row pins to logic high
-	LPC_GPIO3->FIOSET = ((1UL << 25) | (1UL << 26));
-	LPC_GPIO1->FIOSET = (1UL << 21);
+	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
+	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
 
 	return iCol_Number;
 }

@@ -161,7 +161,7 @@ static void render_screen(int scr_id, char *line1, char *line2)
 #else
 		snprintf(line1, 17, "  KSNDMC - TRG  ");
 #endif
-		snprintf(line2, 17, "ID:%-4.4s K:%d C:%d", sid, dbg_last_key, (int)((LPC_GPIO0->FIOPIN >> 20) & 0x07));
+		snprintf(line2, 17, "ID:%-4.4s K:%d C:%d", sid, dbg_last_key, dbg_raw_cols);
 		break;
 	}
 

@@ -588,6 +588,25 @@ To effortlessly synchronize changes between your development laptop and office c
 
 ---
 
+### 31. Correcting Swapped Hardware Row Pins (P3.25 vs P3.26) for Exact Matrix Mapping (v1.0.21)
+
+- **Release Date**: November 3, 2026
+- **Firmware Version**: `TWS6-1.0.21`
+- **Key Enhancements & Bug Fixes**:
+  1. **Swapped Hardware Keypad Rows (Row 0 = P3.25, Row 1 = P3.26)**:
+     - *Issue*: In `kbd.h`, `KBD_ROW0_PINNO` was defined as `26` and `KBD_ROW1_PINNO` was defined as `25`. In the physical PCB traces, `P3.25` connects to Row 0 (Top Row: Menu, Up, Calib) and `P3.26` connects to Row 1 (Middle Row: Left, Set, Right).
+     - *Symptom*: Pressing the physical **Right Arrow** key (Row 1, Col 3) connected `P3.26` to `P0.20`. Because the firmware had `P3.26` configured as Row 0, `Kbd_Scan()` detected `P0.20` LOW during `iRow_No = 0` and computed key code `0 * 3 + 3 = 3` (`eCalib_Key`), popping up `"No Rain Gauge"` for 1.5s while never advancing the screen. Similarly, Up Arrow (Row 0) was detected as Set (Row 1) and vice-versa, leaving carousel navigation completely inoperative.
+     - *Fix*: Corrected pin assignments in `kbd.h` and `kbd.c`:
+       - `KBD_ROW0_PINNO = 25` (P3.25: Top Row - Menu, Up, Calib)
+       - `KBD_ROW1_PINNO = 26` (P3.26: Middle Row - Left, Set, Right)
+       - `KBD_ROW2_PINNO = 21` (P1.21: Bottom Row - Back, Down, Disp)
+       - Updated `Output_Row()` and `Read_Col_Pressed()` to strictly reference `KBD_ROW0_MASK` and `KBD_ROW1_MASK` rather than hardcoded pin numbers.
+  2. **Accurate Active-Column Diagnostic (`dbg_raw_cols`)**:
+     - *Fix*: Changed `SCR_STATION` Line 2 to display `dbg_raw_cols` (the column reading latched directly during the scan cycle when a row is pulled LOW) rather than idle-state `FIOPIN`.
+  3. **Bumped Firmware Version**: Updated to `TWS6-1.0.21`.
+
+---
+
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
