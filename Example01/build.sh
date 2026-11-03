@@ -44,10 +44,12 @@ CFLAGS="-c -mcpu=cortex-m3 -mthumb -O0 -g -fcommon \
   -I${PROJECT_ROOT}/CMSISv1p30_LPC17xx/inc \
   -I${PROJECT_ROOT}/FreeRTOS_Library/include \
   -I${PROJECT_ROOT}/FreeRTOS_Library/portable \
+  -I${PROJECT_ROOT}/FreeRTOS_Library/demo_code \
   -I${EX_DIR}/NXP/Drivers/include \
   -I${EX_DIR}/fat_sd \
   -I${EX_DIR}/USBHostLite"
 
+${CC} ${CFLAGS} "${EX_DIR}/main.c" -o "${OUT_DIR}/main.o"
 ${CC} ${CFLAGS} "${EX_DIR}/gprs.c" -o "${OUT_DIR}/gprs.o"
 ${CC} ${CFLAGS} "${EX_DIR}/ui.c" -o "${OUT_DIR}/ui.o"
 ${CC} ${CFLAGS} "${EX_DIR}/memory.c" -o "${OUT_DIR}/memory.o"

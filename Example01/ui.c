@@ -844,7 +844,7 @@ void system_enter_sleep(void)
 	while (shutdown_pwr == 1) {
 		XITC_Kbd_Log.sig_key = 0;
 		taskENTER_CRITICAL();
-		gi_wdt_task_ok_stat |= WDT_UI_OK;
+		gi_wdt_task_ok_stat |= (WDT_UI_OK | WDT_MEMORY_OK | WDT_SENSOR_OK | WDT_GPRS_OK | WDT_DISK_OK);
 		taskEXIT_CRITICAL();
 
 		/* Only wake up if LPC845 has restored the power rails ('G' or 'U') */
@@ -909,7 +909,12 @@ void vUi_Task(void *pvParameters)
 		wake_display();
 		ui_send_lcd(WELCOME_STR1, " INITIALIZING.. ");
 		vTaskDelay(1500 / portTICK_RATE_MS);
-		need_render = 1;
+
+		/* Transition cleanly from splash to Station ID home screen */
+		current_screen = SCR_STATION;
+		render_screen(current_screen, line1, line2);
+		ui_send_lcd(line1, line2);
+		need_render = 0;
 	}
 
 	for (;;) {

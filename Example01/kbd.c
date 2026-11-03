@@ -45,6 +45,11 @@ void init_kbd_pins(void)
 	PINSEL_ConfigPin(&KBD_config);
 	GPIO_SetDir(KBD_ROW2_PORT, KBD_ROW2_MASK, DIR_OUT);
 
+	// Ensure all rows are idle HIGH
+	GPIO_SetValue(KBD_ROW0_PORT, KBD_ROW0_MASK);
+	GPIO_SetValue(KBD_ROW1_PORT, KBD_ROW1_MASK);
+	GPIO_SetValue(KBD_ROW2_PORT, KBD_ROW2_MASK);
+
 	// for column 0 pin
 	KBD_config.Portnum   = KBD_COL0_PORT;
 	KBD_config.Pinnum    = KBD_COL0_PINNO;
@@ -225,9 +230,9 @@ void vKbd_Task(void *pvParameters)
 	int no_key_timeout;
 
 	XITC_Kbd_Log.sig_key = 0;
+	XITC_Kbd_Log.key_value = 0;
 	init_kbd_pins();
 
-	XITC_Kbd_Log.sig_key = 0;
 	portTickType xLastWakeTime;
 
 

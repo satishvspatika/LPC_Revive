@@ -74,10 +74,10 @@ void init_lcd_pins(void){
 	PINSEL_ConfigPin(&LCD_config);
 	GPIO_SetDir(LCD_BL_PORT, LCD_BL_MASK, DIR_OUT);
 
-
-
+	/* Initialize all control and data lines to 0 (Write mode, Command mode, EN low, BL off) */
+	GPIO_ClearValue(LCD_CTRL_PORT, LCD_RS_MASK | LCD_RW_MASK | LCD_EN_MASK);
+	GPIO_ClearValue(LCD_DATA_PORT, LCD_DATA_MASK);
 	GPIO_ClearValue(LCD_BL_PORT, LCD_BL_MASK);
-
 }
 
 void lcd_backlight_on(void)
@@ -106,8 +106,8 @@ void lcd_backlight_off(void)
 
 static void Output_Lcd_Nibble(unsigned char nibble) {
 	unsigned int temp1 = 0;
-	// Command mode: RS = 0
-	GPIO_ClearValue(LCD_CTRL_PORT, LCD_RS_MASK);
+	// Command mode: RS = 0, RW = 0
+	GPIO_ClearValue(LCD_CTRL_PORT, LCD_RS_MASK | LCD_RW_MASK);
 
 	if(nibble & 0x01) temp1 |= LCD_D4_MASK;
 	if(nibble & 0x02) temp1 |= LCD_D5_MASK;
@@ -117,7 +117,9 @@ static void Output_Lcd_Nibble(unsigned char nibble) {
 	GPIO_SetValue(LCD_CTRL_PORT, LCD_EN_MASK);
 	GPIO_ClearValue(LCD_DATA_PORT, LCD_DATA_MASK);
 	GPIO_SetValue(LCD_DATA_PORT, temp1);
+	for (volatile int d = 0; d < 20; d++);
 	GPIO_ClearValue(LCD_CTRL_PORT, LCD_EN_MASK);
+	for (volatile int d = 0; d < 20; d++);
 }
 
 void Initialize_Lcd(void) {
@@ -170,14 +172,14 @@ void Output_Lcd(char cData, char cCd){
   unsigned char temp=0;
   unsigned int temp1=0;
 
-
-  // first let us take care of RS signal
+  // RS signal: 1 = data, 0 = command
   if(cCd == 1)
 	GPIO_SetValue(LCD_CTRL_PORT, LCD_RS_MASK);
-
   else
-	 GPIO_ClearValue(LCD_CTRL_PORT, LCD_RS_MASK);
+	GPIO_ClearValue(LCD_CTRL_PORT, LCD_RS_MASK);
 
+  // RW signal: 0 = write
+  GPIO_ClearValue(LCD_CTRL_PORT, LCD_RW_MASK);
 
   // first MS Nibble of the command / data
   temp=cData;
@@ -192,16 +194,15 @@ void Output_Lcd(char cData, char cCd){
   if(temp & 0x08)
 	  temp1 |= LCD_D7_MASK;
 
-
-
- // now raise EN, put the data and clear EN
+  // now raise EN, put the data and clear EN
   GPIO_SetValue(LCD_CTRL_PORT, LCD_EN_MASK);
   GPIO_ClearValue(LCD_DATA_PORT, LCD_DATA_MASK);
   GPIO_SetValue(LCD_DATA_PORT, temp1);
+  for (volatile int d = 0; d < 20; d++);
   GPIO_ClearValue(LCD_CTRL_PORT, LCD_EN_MASK);
+  for (volatile int d = 0; d < 20; d++);
 
-
- // next the LS Nibble of command / data
+  // next the LS Nibble of command / data
   temp=cData;
   temp&=0x0F;
   temp1 = 0;
@@ -214,46 +215,37 @@ void Output_Lcd(char cData, char cCd){
   if(temp & 0x08)
 	  temp1 |= LCD_D7_MASK;
 
-
-
- // now raise EN, put the data and clear EN
- GPIO_SetValue(LCD_CTRL_PORT, LCD_EN_MASK);
+  // now raise EN, put the data and clear EN
+  GPIO_SetValue(LCD_CTRL_PORT, LCD_EN_MASK);
   GPIO_ClearValue(LCD_DATA_PORT, LCD_DATA_MASK);
   GPIO_SetValue(LCD_DATA_PORT, temp1);
+  for (volatile int d = 0; d < 20; d++);
   GPIO_ClearValue(LCD_CTRL_PORT, LCD_EN_MASK);
+  for (volatile int d = 0; d < 20; d++);
 
   wait_lcd();
-  //vTaskDelay(2 / portTICK_RATE_MS);
-
 }
 
 /*-------------------------------------------------------------------------------------------------------------------*
 * 	FUNCTION NAME : wait_lcd
- * 	DESCRIPTION : This function is used to give some delay whenever read the LCD data.
+ * 	DESCRIPTION : This function provides execution delay for HD44780 commands & writes (~50us).
 * 	VERSION : 1.5
 * 	ARGUMENTS : None
 * 	RETURN VALUES : None
 * 	GLOBALS INPUT : None
 *	GLOBALS AFFECTED : None
 *	CALLED FUNCTION : Output_Lcd
-*	CALLING FUNCTION : GPIO_ClearValue, GPIO_SetValue, GPIO_ReadValue, GPIO_SetDir
+*	CALLING FUNCTION : None
 *
 
 /*---------------------------------------------------------------------------------------------------------------------*/
 
 void wait_lcd( void )
 {
-   GPIO_SetDir(LCD_DATA_PORT, LCD_DATA_MASK, DIR_IN);
-  GPIO_ClearValue(LCD_CTRL_PORT, LCD_RS_MASK);
-  GPIO_SetValue(LCD_CTRL_PORT, (LCD_RW_MASK|LCD_EN_MASK));
-
-  while((GPIO_ReadValue(LCD_DATA_PORT)) & LCD_BUSY_FLAG)
-	  vTaskDelay(2 / portTICK_RATE_MS);
-
-  GPIO_ClearValue(LCD_CTRL_PORT, LCD_RW_MASK|LCD_EN_MASK);
-  GPIO_SetDir(LCD_DATA_PORT, LCD_DATA_MASK, DIR_OUT);
-
-
+	/* HD44780 standard command execution is 37us to 43us.
+	 * Volatile loop delay of ~50us ensures command execution completes
+	 * without busy flag deadlock, floating pin false-busy, or task blocking. */
+	for (volatile int d = 0; d < 1000; d++);
 }
 
 /*-------------------------------------------------------------------------------------------------------------------*

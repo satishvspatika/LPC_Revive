@@ -87,6 +87,7 @@ int main( void )
 	memory_task_started = 0;
 	sensor_task_started = 0;
 	disk_task_started = 0;
+	shutdown_pwr = 0;
 
 
 	/*
@@ -109,9 +110,9 @@ int main( void )
 	xTaskCreate( vSensor_Task, "Sensor Task", 260, NULL, 1, NULL );
 	xTaskCreate( vDisk_Task,"Disk Task", 260, NULL, 1, NULL );
 	xTaskCreate( vGprs_Task, "GPRS Task", 1300, NULL, 1, NULL );
-	xTaskCreate( vKbd_Task, "KBD Task", 120, NULL, 1, NULL );
-	xTaskCreate( vUi_Task, "UI Task", 260, NULL, 1, NULL );
-	xTaskCreate( vLcd_Task, "LCD Task", 120, NULL, 1, NULL );
+	xTaskCreate( vKbd_Task, "KBD Task", 200, NULL, 1, NULL );
+	xTaskCreate( vUi_Task, "UI Task", 320, NULL, 1, NULL );
+	xTaskCreate( vLcd_Task, "LCD Task", 200, NULL, 1, NULL );
 	xTaskCreate( vISPUart_Task, "ISP UART Task", 260, NULL, 1, NULL );
 	xTaskCreate( vWDT_Task, "WDT Task", 120, NULL, 1, NULL );
 
