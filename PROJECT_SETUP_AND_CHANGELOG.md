@@ -46,6 +46,8 @@ The Spatika Automatic Weather Station (TWS) consists of two tightly coupled NXP 
 TWS5_1_0_5_recovered_Jan2026/
 ├── PROJECT_SETUP_AND_CHANGELOG.md  <-- This master documentation file
 ├── README.md                       <-- Symlink to this master file
+├── get_git.sh                      <-- 1-click pull/sync or checkout specific -tag
+├── push_git.sh                     <-- 1-click commit, tag and push (-tag "<tag>")
 ├── build_all.sh                    <-- 1-click build for BOTH LPC1768 and LPC845
 ├── flash_lpc1768.sh                <-- 1-click erase, flash & verify LPC1768
 ├── flash_lpc845.sh                 <-- 1-click erase, flash & verify LPC845
@@ -134,7 +136,36 @@ Flashing is performed via NXP MCU-LINK debug probe using LinkServer.
 
 ---
 
-## 5. LPC1768 Memory Architecture & Standalone Boot Stub
+## 5. Multi-Machine Git Sync Tools (`push_git.sh` & `get_git.sh`)
+
+To effortlessly synchronize changes between your development laptop and office computer:
+
+### Pushing Changes with a Tag (`push_git.sh`)
+```bash
+# Push with a tag
+./push_git.sh -tag "v1.0.1"
+
+# Or push with a tag and a custom commit message
+./push_git.sh -tag "v1.0.1" -m "Fixed HTTP socket prompt and 4G APN handling"
+```
+*Action*: Automatically stages modified files, creates a commit, creates an annotated Git tag, and pushes both the branch and the tag to GitHub (`satishvspatika/LPC_Revive`).
+
+### Retrieving on Another Computer (`get_git.sh`)
+```bash
+# 1. Retrieve the latest updates on the current branch:
+./get_git.sh
+
+# 2. Or retrieve and checkout a specific tagged release:
+./get_git.sh -tag "v1.0.1"
+
+# 3. List all tags available in the repository:
+./get_git.sh -list
+```
+*Action*: Fetches all remote updates and tags. If a `-tag` is given, cleanly checks out that exact tagged snapshot.
+
+---
+
+## 6. LPC1768 Memory Architecture & Standalone Boot Stub
 
 ### Flash Sector Map
 | Sector | Address Range | Size | Allocation / Content |
