@@ -4,12 +4,34 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EX_DIR="${PROJECT_ROOT}/Example01"
 SCRIPTS_DIR="${PROJECT_ROOT}/scripts"
 OUT_DIR="${EX_DIR}/Debug"
-TC_DIR="/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/bin"
-CC="${TC_DIR}/arm-none-eabi-gcc"
-AS="${TC_DIR}/arm-none-eabi-as"
-LD="${TC_DIR}/arm-none-eabi-ld"
-OBJCOPY="${TC_DIR}/arm-none-eabi-objcopy"
-SIZE="${TC_DIR}/arm-none-eabi-size"
+# Auto-detect ARM GCC toolchain
+if command -v arm-none-eabi-gcc >/dev/null 2>&1; then
+    CC="arm-none-eabi-gcc"
+    AS="arm-none-eabi-as"
+    LD="arm-none-eabi-ld"
+    OBJCOPY="arm-none-eabi-objcopy"
+    SIZE="arm-none-eabi-size"
+else
+    MCUX_BIN=$(ls -d /Applications/MCUXpressoIDE*/ide/plugins/com.nxp.mcuxpresso.tools.*/tools/bin 2>/dev/null | tail -n 1 || true)
+    if [ -n "$MCUX_BIN" ] && [ -x "${MCUX_BIN}/arm-none-eabi-gcc" ]; then
+        CC="${MCUX_BIN}/arm-none-eabi-gcc"
+        AS="${MCUX_BIN}/arm-none-eabi-as"
+        LD="${MCUX_BIN}/arm-none-eabi-ld"
+        OBJCOPY="${MCUX_BIN}/arm-none-eabi-objcopy"
+        SIZE="${MCUX_BIN}/arm-none-eabi-size"
+    elif [ -x "/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/bin/arm-none-eabi-gcc" ]; then
+        TC_DIR="/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/bin"
+        CC="${TC_DIR}/arm-none-eabi-gcc"
+        AS="${TC_DIR}/arm-none-eabi-as"
+        LD="${TC_DIR}/arm-none-eabi-ld"
+        OBJCOPY="${TC_DIR}/arm-none-eabi-objcopy"
+        SIZE="${TC_DIR}/arm-none-eabi-size"
+    else
+        echo "[ERROR] arm-none-eabi-gcc toolchain not found!"
+        echo "Please install MCUXpresso IDE or GNU Arm Embedded Toolchain, or add it to PATH."
+        exit 127
+    fi
+fi
 
 echo "=== 1. Compiling upgraded sources (LPC1768) ==="
 CFLAGS="-c -mcpu=cortex-m3 -mthumb -O0 -g -fcommon \

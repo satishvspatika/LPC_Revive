@@ -2,10 +2,28 @@
 set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="${DIR}/../scripts"
-TC_DIR="/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/bin"
-CC="${TC_DIR}/arm-none-eabi-gcc"
-OBJCOPY="${TC_DIR}/arm-none-eabi-objcopy"
-SIZE="${TC_DIR}/arm-none-eabi-size"
+# Auto-detect ARM GCC toolchain
+if command -v arm-none-eabi-gcc >/dev/null 2>&1; then
+    CC="arm-none-eabi-gcc"
+    OBJCOPY="arm-none-eabi-objcopy"
+    SIZE="arm-none-eabi-size"
+else
+    MCUX_BIN=$(ls -d /Applications/MCUXpressoIDE*/ide/plugins/com.nxp.mcuxpresso.tools.*/tools/bin 2>/dev/null | tail -n 1 || true)
+    if [ -n "$MCUX_BIN" ] && [ -x "${MCUX_BIN}/arm-none-eabi-gcc" ]; then
+        CC="${MCUX_BIN}/arm-none-eabi-gcc"
+        OBJCOPY="${MCUX_BIN}/arm-none-eabi-objcopy"
+        SIZE="${MCUX_BIN}/arm-none-eabi-size"
+    elif [ -x "/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/bin/arm-none-eabi-gcc" ]; then
+        TC_DIR="/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/bin"
+        CC="${TC_DIR}/arm-none-eabi-gcc"
+        OBJCOPY="${TC_DIR}/arm-none-eabi-objcopy"
+        SIZE="${TC_DIR}/arm-none-eabi-size"
+    else
+        echo "[ERROR] arm-none-eabi-gcc toolchain not found!"
+        echo "Please install MCUXpresso IDE or GNU Arm Embedded Toolchain, or add it to PATH."
+        exit 127
+    fi
+fi
 
 echo "=== 1. Compiling LPC845 main.c ==="
 ${CC} -c -mcpu=cortex-m0plus -mthumb \
