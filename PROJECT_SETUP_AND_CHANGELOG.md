@@ -376,12 +376,29 @@ To effortlessly synchronize changes between your development laptop and office c
   1. Reduced `wirespeed` in `scripts/lpc1768-mculink.json` from `500000` to `100000` (100 kHz), providing noise immunity and stable SWD communications across ribbon cables.
   2. Updated `flash_lpc1768.sh` to strictly verify `Finished writing Flash successfully` and abort with an explicit error code on `Writing Flash ended with an error`, `Hardware Transfer Error`, or `Could not connect to core`.
 
+### 21. Non-Volatile Station ID & Parameter Protection (`v1.0.10`)
+- **Problem**:
+  1. Whenever `./flash_lpc1768.sh` was executed, Step 1 ran a full chip mass-erase: `LinkServer flash ... erase`.
+  2. In LPC1768 memory layout:
+     - Sector 0 (`0x00000000` - `0x00000FFF`): Sector 0 Boot Stub
+     - Sector 1 (`0x00001000` - `0x00001FFF`): `PARAM_SECTOR` (EEPROM-emulated storage for Station ID, station name, GSM numbers, server endpoints, and calibration values)
+     - Sectors 16..29 (`0x00018000`+): Application Firmware
+  3. Unconditional mass-erase wiped Sector 1, erasing the on-device Station ID (e.g. `001922`).
+  4. On initial boot after an erase, `memory.c` fell back to `params_default()`, which contained legacy dummy ID `"001060"`, forcing the user to manually re-enter their station ID every time they flashed.
+- **Fix**:
+  1. **Safe Flashing Without Mass Erase**: Updated `flash_lpc1768.sh` to eliminate the automatic `erase` step. LinkServer `load LPC1768_TWS_FULL.hex` erases only the sectors required by the payload (Sector 0 and Sectors 16+). Sector 1 is preserved intact. Added optional `--mass-erase` / `--erase-all` flags for when full wipe is explicitly desired.
+  2. **Updated Fallback Default Station ID**: Updated `params_default()` in `memory.c` from `"001060"` to `"001922"` (for both `CFG_KSNDMC_TWS` and default `CFG_KSNDMC_TRG`).
+  3. **Guarded Parameter Restoration**: Added validation in `memory.c` so parameter sector reinitialization will never overwrite a valid station ID with uninitialized memory if `gi_log_interval > 31`.
+  4. Bumped firmware version strings to `TWS6-1.0.10`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
 | :--- | :--- | :--- |
+| **Running unconditional mass-erase in `flash_lpc1768.sh`** | Mass-erase wipes Sector 1 (`0x1000`–`0x1FFF`), destroying configured Station ID (`001922`), GSM numbers, and calibration parameters. | Let LinkServer `load` erase only Sector 0 and Application sectors (`0x18000+`). Only mass-erase if `--mass-erase` flag is explicitly passed. |
+| **Hardcoding fallback Station ID to `001060`** | `001060` was an old 2013 test ID. Blank/new sectors defaulted to 1060, requiring manual reconfiguration. | Set fallback default in `params_default()` to active test station ID (`001922`). |
 | **Adding large static buffers to `RamLoc32`** | LPC1768 `RamLoc32` has only 32 KB and is nearly full with FreeRTOS heap and FAT filesystem structures. Adding static buffers overflows `RamLoc32` `.bss`. | Relocate large telemetry buffers (`http_data`, `ftp_buff`) to AHB SRAM Bank 1 (`0x20080000`–`0x20083FFF`, 16 KB unreserved). |
 | **Relinking application to `ORIGIN = 0x00000000`** | Application is ~138 KB. Starting at `0x0` collides with Sector 1 (`PARAM_SECTOR`) and Sectors 2–8 (`days_sector`). Writing IAP logs erases application code! | Keep application at `0x00018000` (Sector 17). Use the Sector 0 Boot Stub at `0x00000000`. |
 | **Flashing application at `0x00018000` without Sector 0 Boot Stub** | LPC1768 hardware ROM only looks at `0x00000000` on reset. Without a bootloader or stub, CPU never jumps to `0x18000`. | Always flash `LPC1768_TWS_FULL.hex`, which includes the boot stub. |

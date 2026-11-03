@@ -325,7 +325,7 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9741391102");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.9");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.10");
 
 	// Primary Server: Bihar Govt / BMSK (JSON endpoint on port 8085)
 	strcpy(Global_Data_Params.gc_http_server_name1, "rtdasbmsk.spatika.net");
@@ -353,7 +353,7 @@ void params_default(void){
 	Global_Data_Params.gi_ftpserver_port2 = 21;
 
 #elif (UNIT_CFG == CFG_KSNDMC_TWS)
-	strcpy(Global_Data_Params.gc_station_id, "001060");
+	strcpy(Global_Data_Params.gc_station_id, "001922");
 	strcpy(Global_Data_Params.gc_station_name, "VARSHA-TWS");
 	strcpy(Global_Data_Params.gc_model, "TWS-DMC");
 
@@ -367,7 +367,7 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9449020611");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.9");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.10");
 
 	// HTTP Configuration for KSNDMC_TWS (SYSTEM 1 per Spatika / KSNDMC Specification)
 	strcpy(Global_Data_Params.gc_http_server_name1, "rtdas.ksndmc.net");
@@ -394,7 +394,7 @@ void params_default(void){
 	Global_Data_Params.gi_ftpserver_port2 = 21;
 
 #else /* CFG_KSNDMC_TRG (Default) */
-	strcpy(Global_Data_Params.gc_station_id, "001060");
+	strcpy(Global_Data_Params.gc_station_id, "001922");
 	strcpy(Global_Data_Params.gc_station_name, "VARSHA-TRG");
 	strcpy(Global_Data_Params.gc_model, "TRG-DMC");
 
@@ -408,7 +408,7 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9449020611");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.9");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.10");
 
 	// Primary Server: KSNDMC (v3 Endpoint, form-encoded)
 	strcpy(Global_Data_Params.gc_http_server_name1, "rtdas.ksndmc.net");
@@ -1162,7 +1162,7 @@ void vMemory_Task(void *pvParameters)
 	//	init_entire_space();
 	vTaskDelay(100 / portTICK_RATE_MS);
 
-	strcpy(new_version, "TWS6-1.0.9");
+	strcpy(new_version, "TWS6-1.0.10");
 
 	Global_Data_Params_From_Flash = (Global_Data_Params_def*)PARAM_START_ADDR;
 
@@ -1210,10 +1210,17 @@ void vMemory_Task(void *pvParameters)
 	read_param_sector();
 
 	if((Global_Data_Params.gi_log_interval > 31) || (Global_Data_Params.gi_report_interval > 31)){
+		char temp_stn[16] = {0};
+		if (Global_Data_Params_From_Flash->gc_station_id[0] >= '0' &&
+		    Global_Data_Params_From_Flash->gc_station_id[0] <= '9') {
+			strncpy(temp_stn, Global_Data_Params_From_Flash->gc_station_id, sizeof(temp_stn) - 1);
+		}
 		params_default();
 		vTaskDelay(500 / portTICK_RATE_MS);
 
-		strcpy(Global_Data_Params.gc_station_id, Global_Data_Params_From_Flash->gc_station_id);
+		if (strlen(temp_stn) >= 4) {
+			strcpy(Global_Data_Params.gc_station_id, temp_stn);
+		}
 
 		write_param_sector();
 		vTaskDelay(50 / portTICK_RATE_MS);

@@ -10,9 +10,17 @@ echo "=== Flashing LPC1768 (TWS 5.1.0.5 Full Firmware) ==="
 pkill -9 -f redlinkserv 2>/dev/null || true
 pkill -9 -f LinkServer 2>/dev/null || true
 
-echo "1. Mass Erasing LPC1768 (512 KB)..."
-"${LINKSERVER}" flash -p '#1' -u none "${CONFIG}" erase
-pkill -9 -f redlinkserv 2>/dev/null || true
+# Sector 1 (0x1000 - 0x1FFF) stores non-volatile station parameters (station ID, URLs, keys).
+# LinkServer 'load' automatically erases only the sectors being written (Sector 0 Boot Stub &
+# Sector 16+ Application). By skipping mass-erase, the on-device Station ID and user settings
+# are preserved across firmware flashes. Full erase is only run if explicitly passed as argument.
+if [ "$1" == "--mass-erase" ] || [ "$1" == "--erase-all" ]; then
+    echo "1. Mass Erasing LPC1768 (512 KB) [EXPLICITLY REQUESTED]..."
+    "${LINKSERVER}" flash -p '#1' -u none "${CONFIG}" erase
+    pkill -9 -f redlinkserv 2>/dev/null || true
+else
+    echo "1. Preserving Flash Configuration (Sector 1 Station ID & Parameters)..."
+fi
 
 echo "2. Programming Boot Stub (0x0) + Application (0x18000)..."
 # Allow exit code 1 here: the CPU reboots after write (breaking SWD Terminate),
