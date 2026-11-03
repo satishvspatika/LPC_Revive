@@ -1105,9 +1105,12 @@ void vUi_Task(void *pvParameters)
 
 			inactivity_seconds += secs_to_advance;
 			if (inactivity_seconds >= 60 && gUi_Active) {
-				/* Operator inactivity timeout: enter deep sleep to cut power rails */
+				/* Operator inactivity timeout: turn off LCD backlight to save power without cutting MCU or locking keypad */
 				inactivity_seconds = 0;
-				system_enter_sleep();
+				gUi_Active = 0;
+				if (lcd_active) {
+					sleep_display();
+				}
 			}
 
 			if (xPresent_Date_Time.year < 100 && xPresent_Date_Time.year > 0) {

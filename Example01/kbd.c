@@ -269,7 +269,7 @@ void vKbd_Task(void *pvParameters)
 		if (iNew_Key) {
 			if (iNew_Key != iOld_Key) {
 				iOld_Key = iNew_Key; // Assign the new key value to the old one
-				iDebounce_Count = 4; // Initialize the debounce count
+				iDebounce_Count = 2; // Initialize the debounce count (fast responsive tap)
 			} else if (iDebounce_Count) {
 				iDebounce_Count--; // Decrement the debounce count
 				if (0 == iDebounce_Count) {

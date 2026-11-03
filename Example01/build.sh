@@ -126,27 +126,65 @@ if [ -n "${REDLIB_DIR}" ] && [ -f "${REDLIB_DIR}/libcr_c.a" ]; then
       "${OUT_DIR}/NXP/Drivers/source/lpc17xx_wdt.o" \
       "${OUT_DIR}/NXP/Drivers/source/lpc17xx_libcfg_default.o" \
       -lCMSISv1p30_LPC17xx -lFreeRTOS_Library -lcr_c -lcr_eabihelpers -lgcc
-
-    echo "=== 3. Assembling Sector 0 Boot Stub ==="
-    ${AS} -mcpu=cortex-m3 -mthumb "${SCRIPTS_DIR}/boot_stub.s" -o "${OUT_DIR}/boot_stub.o"
-    ${LD} -T "${SCRIPTS_DIR}/boot_stub.ld" "${OUT_DIR}/boot_stub.o" -o "${OUT_DIR}/boot_stub.elf"
-    ${OBJCOPY} -O binary "${OUT_DIR}/boot_stub.elf" "${OUT_DIR}/boot_stub.bin"
-    python3 "${SCRIPTS_DIR}/lpc_checksum.py" "${OUT_DIR}/boot_stub.bin"
-    ${OBJCOPY} -I binary -O ihex "${OUT_DIR}/boot_stub.bin" "${OUT_DIR}/boot_stub.hex"
-
-    echo "=== 4. Merging Boot Stub (0x0) + Application (0x18000) ==="
-    ${OBJCOPY} -O ihex "${OUT_DIR}/Example01.axf" "${OUT_DIR}/Example01.hex"
-    cat "${OUT_DIR}/boot_stub.hex" "${OUT_DIR}/Example01.hex" | grep -v ":00000001FF" > "${OUT_DIR}/LPC1768_TWS_FULL.hex"
-    echo ":00000001FF" >> "${OUT_DIR}/LPC1768_TWS_FULL.hex"
-    ${OBJCOPY} -I ihex -O binary "${OUT_DIR}/LPC1768_TWS_FULL.hex" "${OUT_DIR}/LPC1768_TWS_FULL.bin"
-
-    ${SIZE} "${OUT_DIR}/Example01.axf"
-    echo "=== LPC1768 Build Completed Successfully! ==="
-    echo "Full Flashing HEX: ${OUT_DIR}/LPC1768_TWS_FULL.hex"
 else
-    echo "=== 2. C Compilation Verified Successfully! ==="
-    echo "✔ All LPC1768 C source files compiled cleanly with ZERO errors."
-    echo "  [NOTICE] MCUXpresso Redlib libraries (libcr_c.a) not found on this machine."
-    echo "  If on a machine with MCUXpresso IDE, ensure /Applications/MCUXpressoIDE* is present."
-    echo "  Existing flash image: ${OUT_DIR}/LPC1768_TWS_FULL.hex"
+    echo "=== 2. Linking Example01.axf with GNU Arm Embedded Toolchain ==="
+    ${CC} \
+      -mcpu=cortex-m3 -mthumb \
+      --specs=nano.specs --specs=nosys.specs \
+      -L"${PROJECT_ROOT}/CMSISv1p30_LPC17xx/Debug" \
+      -L"${PROJECT_ROOT}/FreeRTOS_Library/Debug" \
+      -L"${EX_DIR}/Debug" \
+      -Xlinker --gc-sections \
+      -Xlinker -Map="${OUT_DIR}/Example01.map" \
+      -T "${EX_DIR}/Debug/example01_gnu.ld" \
+      -o "${OUT_DIR}/Example01.axf" \
+      "${OUT_DIR}/cr_startup_lpc17.o" \
+      "${OUT_DIR}/disk.o" \
+      "${OUT_DIR}/global_functions.o" \
+      "${OUT_DIR}/gprs.o" \
+      "${OUT_DIR}/ispuart.o" \
+      "${OUT_DIR}/kbd.o" \
+      "${OUT_DIR}/lcd.o" \
+      "${OUT_DIR}/main.o" \
+      "${OUT_DIR}/memory.o" \
+      "${OUT_DIR}/sensor.o" \
+      "${OUT_DIR}/ui.o" \
+      "${OUT_DIR}/wdt.o" \
+      "${OUT_DIR}/fat_sd/diskio.o" \
+      "${OUT_DIR}/fat_sd/spi_sd_lpc17xx.o" \
+      "${OUT_DIR}/fat_sd/ff.o" \
+      "${OUT_DIR}/fat_sd/fattime.o" \
+      "${OUT_DIR}/fat_sd/option/ccsbcs.o" \
+      "${OUT_DIR}/USBHostLite/rtc_cal.o" \
+      "${OUT_DIR}/USBHostLite/usbhost_lpc17xx.o" \
+      "${OUT_DIR}/USBHostLite/usbhost_ms.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_adc.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_clkpwr.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_gpdma.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_gpio.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_i2c.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_nvic.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_pinsel.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_ssp.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_uart.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_wdt.o" \
+      "${OUT_DIR}/NXP/Drivers/source/lpc17xx_libcfg_default.o" \
+      -lCMSISv1p30_LPC17xx -lFreeRTOS_Library -lm
 fi
+
+echo "=== 3. Assembling Sector 0 Boot Stub ==="
+${AS} -mcpu=cortex-m3 -mthumb "${SCRIPTS_DIR}/boot_stub.s" -o "${OUT_DIR}/boot_stub.o"
+${LD} -T "${SCRIPTS_DIR}/boot_stub.ld" "${OUT_DIR}/boot_stub.o" -o "${OUT_DIR}/boot_stub.elf"
+${OBJCOPY} -O binary "${OUT_DIR}/boot_stub.elf" "${OUT_DIR}/boot_stub.bin"
+python3 "${SCRIPTS_DIR}/lpc_checksum.py" "${OUT_DIR}/boot_stub.bin"
+${OBJCOPY} -I binary -O ihex "${OUT_DIR}/boot_stub.bin" "${OUT_DIR}/boot_stub.hex"
+
+echo "=== 4. Merging Boot Stub (0x0) + Application (0x18000) ==="
+${OBJCOPY} -O ihex "${OUT_DIR}/Example01.axf" "${OUT_DIR}/Example01.hex"
+cat "${OUT_DIR}/boot_stub.hex" "${OUT_DIR}/Example01.hex" | grep -v ":00000001FF" > "${OUT_DIR}/LPC1768_TWS_FULL.hex"
+echo ":00000001FF" >> "${OUT_DIR}/LPC1768_TWS_FULL.hex"
+${OBJCOPY} -I ihex -O binary "${OUT_DIR}/LPC1768_TWS_FULL.hex" "${OUT_DIR}/LPC1768_TWS_FULL.bin"
+
+${SIZE} "${OUT_DIR}/Example01.axf"
+echo "=== LPC1768 Build Completed Successfully! ==="
+echo "Full Flashing HEX: ${OUT_DIR}/LPC1768_TWS_FULL.hex"

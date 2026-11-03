@@ -445,9 +445,35 @@ To effortlessly synchronize changes between your development laptop and office c
   2. **Deterministic Modem Power-Down & Sleep**: Regardless of whether HTTP transmission succeeds or fails, the firmware now deterministically executes `AT+CIPCLOSE=0` -> `AT+NETCLOSE` -> `AT+CPOF` to power off the SIM7600 RF engine (shutting off the `NETLIGHT` LED) and immediately triggers `sleep_mode = 1` -> `system_enter_sleep()` to cut power rails via the LPC845.
   3. Bumped firmware version strings to `TWS6-1.0.14`.
 
+### 26. Standalone GNU Toolchain Linking, LCD Unfreeze, Keypad Debounce & Power Flow (`v1.0.16`)
+- **Problem**:
+  1. **Stale Firmware Flashing (The Root Cause)**: In `Example01/build.sh`, the link stage was strictly conditional on finding NXP MCUXpresso Redlib (`libcr_c.a`). If Redlib was not installed at `/Applications/MCUXpressoIDE*`, `build.sh` silently skipped linking and exited with code 0! Consequently, all builds since Nov 2 reused stale `LPC1768_TWS_FULL.hex` from initial commit `d51b5f9` (`TWS6-1.0.3`), and none of the code changes (HTTP fixes, power-off fixes, LCD unfreezes) were ever actually flashed to the board.
+  2. **LCD Stuck at `"VARSHA-TWS INITIALIZING.."`**: `wait_lcd()` in `lcd.c` polled `LCD_BUSY_FLAG` (P2.8) in an infinite loop without performing the dual EN pulse required on 4-bit bus mode. Because the pin floated high due to internal pull-ups, the LCD task hung permanently on boot.
+  3. **Unresponsive Keypad**:
+     - `iDebounce_Count` was set to 4 cycles (~52 ms debounce window), making rapid or short key taps register as unacknowledged noise.
+     - Keypad row pins (`Row0`, `Row1`, `Row2`) were not explicitly initialized HIGH on boot.
+     - In `vUi_Task` (`ui.c`), the 60-second inactivity timeout called `system_enter_sleep()`. This set `shutdown_pwr = 1` and spun in `while (shutdown_pwr == 1)`, locking `vKbd_Task` and `vUi_Task` in an infinite while loop and tristating keypad GPIO pins.
+  4. **Modem NETLIGHT Running Continuously**:
+     - If the user was in the UI when telemetry finished, sleep was skipped, leaving SIM7600 powered with NETLIGHT blinking.
+- **Fix**:
+  1. **Standalone GNU Linking Enabled**: Created `Example01/Debug/example01_gnu.ld` and `Example01/Debug/example01_gnu_lib.ld`. Configured `build.sh` to link seamlessly using GNU Arm Embedded toolchain (`--specs=nano.specs --specs=nosys.specs -lm`) whenever Redlib is absent. Fresh `LPC1768_TWS_FULL.hex` and `LPC1768_TWS_FULL.bin` are now compiled, linked, checksummed, and merged every time `./build_all.sh` is executed.
+  2. **LCD Busy Flag Deadlock Eliminated**: Replaced busy-flag polling in `wait_lcd()` with a calibrated, non-blocking delay (~50 µs). Hardwired `LCD_RW_MASK` low (`0` = write mode) to eliminate bus contention. Splash screen transitions cleanly to `SCR_STATION` after 1.5 seconds.
+  3. **Keypad Responsiveness Restored**:
+     - Reduced `iDebounce_Count` from 4 to 2 cycles (~26 ms) for instantaneous key response.
+     - Initialized row pins HIGH in `init_kbd_pins()`.
+     - Replaced `system_enter_sleep()` on 60s UI inactivity with `sleep_display()`, turning off only the LCD backlight to conserve power without freezing tasks or locking the keypad.
+  4. **Independent Modem Power-Down**: Guarded modem shutdown so SIM7600 powers off (`AT+CPOF` turns off NETLIGHT) even if the operator is actively interacting with the UI.
+  5. Bumped firmware version strings to `TWS6-1.0.16`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
+
+| Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
+| :--- | :--- | :--- |
+| **Silently skipping linker stage when Redlib is absent** | Causes `build.sh` to exit with success while leaving stale binaries from previous commits on disk. Flashing appears successful, but the device runs old code. | Always provide a standalone GNU Arm linker fallback (`example01_gnu.ld`) with `nano.specs` so builds never produce stale images. |
+| **Polling LCD busy flag in an infinite loop without dual EN strobes** | On 4-bit bus mode, reading the busy flag requires two EN strobes (high nibble, low nibble). Polling single pin floats high with pull-up, trapping the MCU in an infinite loop. | Use calibrated microsecond execution delays (~50 µs) instead of busy-flag polling on HD44780 LCDs. |
+| **Calling `system_enter_sleep()` on UI inactivity timeout** | Traps `vKbd_Task` and `vUi_Task` in `while (shutdown_pwr == 1)` and tristates pins without LPC845 cutting power, making the keypad unresponsive. | Call `sleep_display()` to turn off the LCD backlight while keeping tasks and keypad scanning active. |
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
 | :--- | :--- | :--- |
