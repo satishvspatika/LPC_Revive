@@ -364,17 +364,17 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9449020611");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.3");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.4");
 
-	// HTTP Configuration for TWS (Per Spatika Specification)
-	strcpy(Global_Data_Params.gc_http_server_name1, "rtdas.spatika.net");
-	strcpy(Global_Data_Params.gc_http_link1, "/tws_gprs/update_tws_data_v2");
-	strcpy(Global_Data_Params.gc_http_key1, "climate4p2013");
+	// HTTP Configuration for KSNDMC_TWS (SYSTEM 1 per Spatika / KSNDMC Specification)
+	strcpy(Global_Data_Params.gc_http_server_name1, "rtdas.ksndmc.net");
+	strcpy(Global_Data_Params.gc_http_link1, "/tws_gprs/update_tws_data_v3");
+	strcpy(Global_Data_Params.gc_http_key1, "climate4pTWS");
 	Global_Data_Params.gi_http_server_port1 = 80;
 
 	strcpy(Global_Data_Params.gc_http_server_name2, "rtdas.spatika.net");
 	strcpy(Global_Data_Params.gc_http_link2, "/tws_gprs/update_tws_data_v2");
-	strcpy(Global_Data_Params.gc_http_key2, "climate4p2013");
+	strcpy(Global_Data_Params.gc_http_key2, "climate4pTWS");
 	Global_Data_Params.gi_http_server_port2 = 80;
 
 	// Primary Protocol for KSNDMC_TWS: FTP (Strict 57-byte fixed-column .kwd file)
@@ -1159,7 +1159,7 @@ void vMemory_Task(void *pvParameters)
 	//	init_entire_space();
 	vTaskDelay(100 / portTICK_RATE_MS);
 
-	strcpy(new_version, "TWS6-1.0.3");
+	strcpy(new_version, "TWS6-1.0.4");
 
 	Global_Data_Params_From_Flash = (Global_Data_Params_def*)PARAM_START_ADDR;
 

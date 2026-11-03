@@ -275,6 +275,26 @@ To effortlessly synchronize changes between your development laptop and office c
   6. Added case-insensitive `"success"` check alongside `"Success"` and `"SUCCESS"`.
   7. Added `Send_And_Check_Gprs("AT+NETCLOSE\r\n", "OK", "ERROR", 2000);` if `AT+IPADDR` fails in `connect_http1()`.
 
+### 14. ESP32 Reference Alignment: KSNDMC_TWS (SYSTEM 1) Integration (`v1.0.4`)
+- **Problem**:
+  1. In `Example01/memory.c`, the default TWS profile was hardcoded to `rtdas.spatika.net`, `/tws_gprs/update_tws_data_v2`, and key `climate4p2013`. However, the authoritative ESP32 reference for `SYSTEM == 1` with `UNIT_CFG == KSNDMC_TWS` targets the Karnataka Government AWS server `rtdas.ksndmc.net` (direct IP `117.216.42.181:80`), URL path `/tws_gprs/update_tws_data_v3`, and key `climate4pTWS`.
+  2. Legacy server-side parsers at KSNDMC are strict fixed-column/fixed-key parsers. Including both `stn_no` and `stn_id` caused key-count mismatches. Furthermore, temperature and humidity lacked width formatting (`%05.1f`), causing column shifts on values < 10.0 or > 99.9.
+  3. Aggregate servers strictly reject packets received less than 62 seconds after the 15-minute slot boundary with a `"Rejected"` response. Fast-booting stations that finish network connect in 30 seconds were consistently rejected.
+  4. Asynchronous `+CGEV` (GPRS event) URCs from the cellular modem during data transfers polluted the circular buffer and corrupted `AT+CIPOPEN` and `AT+CIPSEND` response parsing.
+  5. Consecutive backlog transfers with only 200 ms spacing triggered carrier NAT throttling (`TIME_WAIT` RSTs).
+- **Fix**:
+  1. Aligned `Global_Data_Params` defaults in `Example01/memory.c`:
+     - Server: `rtdas.ksndmc.net` (Direct IP: `117.216.42.181:80`)
+     - Path: `/tws_gprs/update_tws_data_v3`
+     - Key: `climate4pTWS`
+  2. Updated `gc_version` and `new_version` to `TWS6-1.0.4` so LPC1768 automatically refreshes Flash Sector 1 on boot while preserving the station ID.
+  3. Implemented exact ESP32 `SYSTEM == 1` payload formatting:
+     `stn_no=%s&rec_time=%04d-%02d-%02d,%02d:%02d&temp=%s&humid=%s&w_speed=%s&w_dir=%s&signal=%d&bat_volt=%s&key=%s`
+     with `%05.1f` for temp/humid, `%04.1f` for wind speed, `%03d` for wind direction, and `%05.2f` for battery.
+  4. Implemented the **62-Second Slot Boundary Guard** in `vGprs_Task`: checks `(minute % 15) * 60 + second` and holds until `T+1m02s` (feeding watchdog) before initiating HTTP connection.
+  5. Added `AT+CGEREP=0` to `check_basic_commands()` to silence carrier URC noise.
+  6. Enforced a **2500 ms carrier breather** between historical backlog transfers in `process_http_backlogs()`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
@@ -295,4 +315,6 @@ To effortlessly synchronize changes between your development laptop and office c
 | **Hardcoding non-existent fallback IPs (`144.91.104.105:80`) for KSNDMC** | Hangs HTTP transmission for 25 seconds on Airtel IoT private APNs. | Use KSNDMC primary domain name first, then fallback to `117.216.42.181:80`. |
 | **Not resetting `dest_in_count` between response lines** | Multi-line HTTP headers exceed 300 bytes, wrapping around in `http_response` and corrupting `Date:`, `200 OK`, or `Success` matches. | Reset `dest_in_count = 0; http_response[0] = 0;` inside `if (lf_recd)` after each line. |
 | **Omitting FreeRTOS WDT feed during 25–30s modem waits** | `vWDT_Task` checks task health every 10 seconds. Un-fed waits in `http_open_tcp` or response polling trip watchdog resets. | Feed `gi_wdt_task_ok_stat |= WDT_GPRS_OK;` periodically inside timeout loops. |
+| **Sending HTTP before 62 seconds past the slot boundary** | KSNDMC server aggregator database slot isn't active until T+1m02s, responding with `"Rejected"`. | Enforce the 62-second hold guard before establishing TCP socket. |
+| **Omitting `AT+CGEREP=0` modem URC silencing** | `+CGEV` network event URCs arrive during `AT+CIPOPEN` or `AT+CIPSEND`, corrupting UART responses. | Send `AT+CGEREP=0` during modem basic command init. |
 

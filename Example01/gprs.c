@@ -929,6 +929,7 @@ void check_basic_commands(void)
 	response_no=Send_And_Check_Gprs("\r\nAT\r\n", "OK", "ERROR", 1000);
 	response_no=Send_And_Check_Gprs("\r\nAT\r\n", "OK", "ERROR", 1000);
 	response_no=Send_And_Check_Gprs("\r\nATE0V1\r\n", "OK", "ERROR", 1000);	// disable echo enable verbose
+	Send_And_Check_Gprs("AT+CGEREP=0\r\n", "OK", "ERROR", 2000);		// silence GPRS event URCs to protect UART buffers
 	response_no=Send_And_Check_Gprs("\r\nAT+CMGF=1\r\n", "OK", "ERROR", 1000);	// switch to Text mode for sms
 	response_no=Send_And_Check_Gprs("\r\nAT&W\r\n", "OK", "ERROR", 3000);
 
@@ -2440,22 +2441,23 @@ int prepare_http_record(int sector_idx, int sample_idx) {
 	if (pkg.humidity < 0 || pkg.humidity > 100) pkg.humidity = 100;
 	if (pkg.avg_ws < 0) pkg.avg_ws = 0;
 
-	int t_x10 = (int)(pkg.temperature * 10.0f + (pkg.temperature >= 0 ? 0.5f : -0.5f));
-	int h_x10 = (int)(pkg.humidity * 10.0f + 0.5f);
-	int w_x10 = (int)(pkg.avg_ws * 10.0f + 0.5f);
-	int bv_x100 = (int)(bat_volt1 * 100.0f + 0.5f);
+	char s_temp[10], s_hum[10], s_ws[10], s_wd[8], s_bat[10];
+	if (pkg.temperature < 0.0f) {
+		snprintf(s_temp, sizeof(s_temp), "-%04.1f", -pkg.temperature);
+	} else {
+		snprintf(s_temp, sizeof(s_temp), "%05.1f", pkg.temperature);
+	}
+	snprintf(s_hum, sizeof(s_hum), "%05.1f", pkg.humidity);
+	snprintf(s_ws, sizeof(s_ws), "%04.1f", pkg.avg_ws);
+	snprintf(s_wd, sizeof(s_wd), "%03d", pkg.wind_dir);
+	snprintf(s_bat, sizeof(s_bat), "%05.2f", bat_volt1);
 
 	snprintf(gc_http_data, sizeof(gc_http_data),
-			"stn_no=%s&stn_id=%s&rec_time=%04d-%02d-%02d,%02d:%02d&temp=%s%d.%d&humid=%d.%d&w_speed=%d.%d&w_dir=%d&signal=%d&bat_volt=%d.%02d&key=%s",
-			clean_stn_id,
+			"stn_no=%s&rec_time=%04d-%02d-%02d,%02d:%02d&temp=%s&humid=%s&w_speed=%s&w_dir=%s&signal=%d&bat_volt=%s&key=%s",
 			clean_stn_id,
 			s->year, s->month, s->date, s->hour, s->minute,
-			(t_x10 < 0 ? "-" : ""), (t_x10 < 0 ? -t_x10 : t_x10) / 10, (t_x10 < 0 ? -t_x10 : t_x10) % 10,
-			h_x10 / 10, h_x10 % 10,
-			w_x10 / 10, w_x10 % 10,
-			pkg.wind_dir,
-			sig,
-			bv_x100 / 100, bv_x100 % 100,
+			s_temp, s_hum, s_ws, s_wd,
+			sig, s_bat,
 			Global_Data_Params.gc_http_key1);
 #endif
 	return 1;
@@ -2531,7 +2533,8 @@ void process_http_backlogs(void) {
 						sd_log_http(">>> Backlog quota reached for this slot.");
 						return;
 					}
-					vTaskDelay(200 / portTICK_RATE_MS);
+					/* Carrier breather delay (Rule 60) to allow tower TCP stack reset */
+					vTaskDelay(2500 / portTICK_RATE_MS);
 				} else {
 					/* Transmission failed / network lost:
 					 * Leave this backlog marked as 0 so next 15-minute slot starts right here.
@@ -2578,26 +2581,24 @@ void prepare_present_rec_for_http_sms(void){
 		}
 
 		float bat_volt = (last_rec_15min_bat1 > 0) ? ((((float)last_rec_15min_bat1 * 3.3f / 4095.0f) / 0.128f)) : 12.5f;
-		int t_x10 = (int)(Packet_Data.temperature * 10.0f + (Packet_Data.temperature >= 0 ? 0.5f : -0.5f));
-		int h_x10 = (int)(Packet_Data.humidity * 10.0f + 0.5f);
-		int w_x10 = (int)(Packet_Data.avg_ws * 10.0f + 0.5f);
-		int bv_x100 = (int)(bat_volt * 100.0f + 0.5f);
-
-		int yr = (xPresent_Date_Time.year > 2000) ? xPresent_Date_Time.year : (xPresent_Date_Time.year + 2000);
-		if (yr < 2020) yr = 2026;
+		char s_temp[10], s_hum[10], s_ws[10], s_wd[8], s_bat[10];
+		if (Packet_Data.temperature < 0.0f) {
+			snprintf(s_temp, sizeof(s_temp), "-%04.1f", -Packet_Data.temperature);
+		} else {
+			snprintf(s_temp, sizeof(s_temp), "%05.1f", Packet_Data.temperature);
+		}
+		snprintf(s_hum, sizeof(s_hum), "%05.1f", Packet_Data.humidity);
+		snprintf(s_ws, sizeof(s_ws), "%04.1f", Packet_Data.avg_ws);
+		snprintf(s_wd, sizeof(s_wd), "%03d", Packet_Data.wind_dir);
+		snprintf(s_bat, sizeof(s_bat), "%05.2f", bat_volt);
 
 		snprintf(gc_http_data, sizeof(gc_http_data),
-				"stn_no=%s&stn_id=%s&rec_time=%04d-%02d-%02d,%02d:%02d&temp=%s%d.%d&humid=%d.%d&w_speed=%d.%d&w_dir=%d&signal=%d&bat_volt=%d.%02d&key=%s",
-				clean_stn_id,
+				"stn_no=%s&rec_time=%04d-%02d-%02d,%02d:%02d&temp=%s&humid=%s&w_speed=%s&w_dir=%s&signal=%d&bat_volt=%s&key=%s",
 				clean_stn_id,
 				yr, xPresent_Date_Time.month ? xPresent_Date_Time.month : 1, xPresent_Date_Time.date ? xPresent_Date_Time.date : 1,
 				xPresent_Date_Time.hour, xPresent_Date_Time.minute,
-				(t_x10 < 0 ? "-" : ""), (t_x10 < 0 ? -t_x10 : t_x10) / 10, (t_x10 < 0 ? -t_x10 : t_x10) % 10,
-				h_x10 / 10, h_x10 % 10,
-				w_x10 / 10, w_x10 % 10,
-				Packet_Data.wind_dir,
-				gi_signal_level,
-				bv_x100 / 100, bv_x100 % 100,
+				s_temp, s_hum, s_ws, s_wd,
+				gi_signal_level, s_bat,
 				Global_Data_Params.gc_http_key1);
 	}
 
@@ -2994,6 +2995,24 @@ void vGprs_Task( void *pvParameters){
 				check_sim_registration();
 				if (gi_sim_reg == 1) {
 					get_apn();
+				}
+			}
+
+			/* Spatika / KSNDMC 62-Second Slot Boundary Guard (Rule 1):
+			 * KSNDMC and Spatika aggregate servers reject packets received < 62s
+			 * after the 15-min slot boundary. Hold until T+1m02s before connecting. */
+			int m_into = xPresent_Date_Time.minute % 15;
+			int s_into = xPresent_Date_Time.second;
+			int total_elapsed = (m_into * 60) + s_into;
+			if (total_elapsed < 62) {
+				int wait_sec = 62 - total_elapsed;
+				sprintf(log_tmp, "HTTP: Slot elapsed %ds (< 62s). Holding %ds to reach T+1m02s...", total_elapsed, wait_sec);
+				sd_log_http(log_tmp);
+				for (int w = 0; w < wait_sec; w++) {
+					vTaskDelay(1000 / portTICK_RATE_MS);
+					taskENTER_CRITICAL();
+					gi_wdt_task_ok_stat |= WDT_GPRS_OK;
+					taskEXIT_CRITICAL();
 				}
 			}
 
