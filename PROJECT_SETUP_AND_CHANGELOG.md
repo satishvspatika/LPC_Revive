@@ -295,6 +295,18 @@ To effortlessly synchronize changes between your development laptop and office c
   5. Added `AT+CGEREP=0` to `check_basic_commands()` to silence carrier URC noise.
   6. Enforced a **2500 ms carrier breather** between historical backlog transfers in `process_http_backlogs()`.
 
+### 15. Cross-System Script Isolation via `.gitignore` & Snapshot Restoration (`v1.0.5`)
+- **Problem**:
+  1. Transferring code between development environments (e.g. office workstation vs laptop) via Git caused `get_git.sh` and `push_git.sh` to overwrite local host configurations or cause merge conflicts during `git pull` and `git checkout`.
+  2. Because older tags (`v1.0.1`–`v1.0.4`) tracked `get_git.sh` and `push_git.sh` in Git history, switching to an older tag aborted with: `error: The following untracked working tree files would be overwritten by checkout: get_git.sh push_git.sh`.
+  3. Returning to `main` from a tag deleted the scripts from the working directory because they were removed from tracking on `main`.
+- **Fix**:
+  1. Added `get_git.sh` and `push_git.sh` to `.gitignore` so they remain untracked and never get staged, committed, or pulled over between systems.
+  2. Implemented pre-operation snapshotting into `.git/local_scripts_backup/` with an automated `trap restore_local_scripts EXIT` in both scripts to guarantee local preservation under all conditions.
+  3. Handled historical tag transitions: automatically avoids untracked collision before `git checkout tags/<tag>`, restores local scripts, and marks them `--skip-worktree`. Switching back to `main` restores scripts cleanly and keeps working directory clean.
+  4. Wrapped both scripts in bash `main() { ... }; main "$@"` so the interpreter loads the entire script in memory, eliminating EOF/offset corruption if disk files are modified mid-run.
+
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
