@@ -501,6 +501,29 @@ To effortlessly synchronize changes between your development laptop and office c
 
 ---
 
+### Section 29: Restoring 1ms Keypad RC Line Settling, 1-Tick Fast Debounce, and Full System Flow (v1.0.19)
+
+- **Release Date**: November 3, 2026
+- **Firmware Version**: `TWS6-1.0.19`
+- **Key Enhancements & Bug Fixes**:
+  1. **Restored 1ms Keypad Matrix Line Settling Delay (`vTaskDelay(1 / portTICK_RATE_MS)`)**:
+     - *Issue*: In v1.0.17, the settling delay between `Output_Row(iRow)` and `Read_Col_Pressed()` was replaced by `for (volatile int d = 0; d < 300; d++);` (~25 µs). Because the LPC1768 keypad matrix uses internal pull-ups (~50 kΩ) with ribbon cable capacitance, 25 µs was far too short to discharge the column lines below the logic 0 input threshold (0.3 × VDD = 0.99 V). As a result, `Read_Col_Pressed()` always read 1s (all columns unpressed), making Up, Down, Menu, Set, Back, and Disp completely unresponsive.
+     - *Fix*: Restored `vTaskDelay(1 / portTICK_RATE_MS)` inside `Kbd_Scan()`, giving the line a full 1 ms (1000 µs) to pull down to 0V.
+  2. **Single-Shot Port Read in `Read_Col_Pressed()`**:
+     - *Issue*: Reading `GPIO_ReadValue(0)` three separate times introduced multi-cycle skew.
+     - *Fix*: Reads `uint32_t port0 = GPIO_ReadValue(KBD_COL0_PORT);` once and evaluates masks simultaneously.
+  3. **High-Responsiveness 1-Tick Debounce Confirmation**:
+     - *Issue*: No debounce filter in `vKbd_Task` allowed switch contact bounce to corrupt key release detection.
+     - *Fix*: Re-implemented debounce with `iDebounce_Count = 1` (13 ms latency) for instant responsive tapping while maintaining 100% bounce immunity. Handled `shutdown_pwr == 1` pin release and recovery.
+  4. **Immediate LCD Task Service Time**:
+     - *Issue*: `vLcd_Task` polled `XITC_Ui_Lcd.sig` every 2 ms.
+     - *Fix*: Reduced idle sleep to `vTaskDelay(1 / portTICK_RATE_MS)` so LCD rendering and screen navigation transitions execute within 1 ms.
+  5. **Telemetry & Logging Flow Clarification**:
+     - Clarified that in standard operation, SIM7600 registers to the cellular network at startup (NETLIGHT blinking slowly), and automatic SD card logging + HTTP telemetry transmission occurs at the scheduled 15-minute slot boundary (:00, :15, :30, :45) when sensor packets arrive from LPC845, or on-demand when initiated from the UI menu.
+  6. **Bumped Firmware Version**: Updated to `TWS6-1.0.19`.
+
+---
+
 ### Section 28: Bulletproof HD44780 LCD Timing, Non-Cutting Display Sleep, and Zero-Surprise System Flow (v1.0.18)
 
 - **Release Date**: November 3, 2026
@@ -536,6 +559,7 @@ To effortlessly synchronize changes between your development laptop and office c
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
 | :--- | :--- | :--- |
+| **Reducing `Kbd_Scan()` settling delay below 500 µs (e.g. `d < 300` loop)** | Keypad membrane lines use ~50 kΩ internal pull-ups with cable capacitance. 25 µs is too fast to discharge column lines below the 0.3×VDD logic 0 threshold, causing all keys to read as unpressed. | Always provide at least 1 ms settling delay (`vTaskDelay(1 / portTICK_RATE_MS)`) after pulling a row LOW before reading columns. |
 | **Cutting 5V LCD power rail via `$f4` during display sleep** | Destroys HD44780 4-bit nibble synchronization, causes rail power bounce, and risks ESD latchup via backfeeding I/O pins. The LCD controller alone draws `< 0.25 mA`. | Keep 5V rail continuously ON while LPC1768 is running. Sleep display by turning off backlight and sending `0x08` (Display OFF); wake display instantly with `0x0C` (Display ON) and backlight ON. |
 | **Pulsing LCD EN before setting data lines or with < 230ns pulse width** | Violates HD44780 setup timing ($t_{AS} \ge 40\text{ ns}, t_{DS} \ge 80\text{ ns}, t_W \ge 230\text{ ns}$). Causes missed nibbles which permanently swap high/low nibble alignment, turning address `0x80` into Display OFF `0x08`. | Always place RS, RW, and D4..D7 data on the bus while EN is LOW, delay $\ge 500\text{ ns}$, pulse EN for $\ge 2\text{ µs}$, and drop EN LOW. |
 | **Starting UI rendering before `lcd_task_started == 1`** | `Initialize_Lcd()` takes ~75 ms. Sending splash screen or display commands during this window corrupts 4-bit mode setup and freezes the screen at `VARSHA-TWS INITIALIZING..`. | Always synchronize `vUi_Task` on `while (!lcd_task_started) vTaskDelay(20);`. |

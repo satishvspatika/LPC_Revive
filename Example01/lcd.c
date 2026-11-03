@@ -268,7 +268,7 @@ void vLcd_Task(void *pvParameters) {
 
 	for (;;){
 		if (!XITC_Ui_Lcd.sig) {
-			vTaskDelay(2 / portTICK_RATE_MS);
+			vTaskDelay(1 / portTICK_RATE_MS);
 			continue;
 		}
 
