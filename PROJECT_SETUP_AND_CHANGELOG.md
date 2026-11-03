@@ -347,15 +347,18 @@ To effortlessly synchronize changes between your development laptop and office c
   5. Streamed exactly `rawLen` bytes of HTTP request over UART upon detecting `>` prompt.
   6. Updated firmware version strings in `Example01/memory.c` (`gc_version` and `new_version`) to `"TWS6-1.0.8"`.
 
-### 19. Telemetry Diagnostic Logging & Firmware Version Display (`v1.0.9`)
+### 19. Comprehensive Telemetry Diagnostic Logging & Firmware Version Display (`v1.0.9`)
 - **Problem**:
-  1. Field logs in `httplog.txt` did not identify the running firmware version, making it impossible to verify whether a newly flashed binary or an older binary in flash was executing during field runs.
-  2. If the `>` prompt scanner timed out, the log only reported `HTTP: No > prompt received from modem!` without capturing what the modem actually returned on UART.
+  1. Field logs in `httplog.txt` lacked granular insight: they did not identify the running firmware version, did not explain why `CIPOPEN` failed, did not capture what the modem returned if `>` prompt timed out, and truncated response logs without detailed HTTP status code breakdown.
+  2. `log_tmp` in `http_send_data_single()` was 160 bytes, risking stack buffer overflow when logging server response lines up to 300 bytes.
 - **Fix**:
-  1. Added `Firmware: %s` (`Global_Data_Params.gc_version`) to the `sd_log_http` start banner in `Example01/gprs.c`, so every 15-minute transmission slot explicitly logs the executing firmware version.
-  2. Added capture buffer `prompt_rx[64]` to log the raw modem reply if prompt search fails (`HTTP: No > prompt received from modem! (rx: [%s])`).
-  3. Added explicit confirmation log `HTTP: > prompt OK, streaming payload...` once `>` is detected.
-  4. Bumped firmware version strings to `TWS6-1.0.9`.
+  1. **Full Telemetry Banner**: Added Station ID, Firmware Version (`TWS6-1.0.9`), Hardware Model (`TWS-DMC`), Operator, Signal level (dBm), Registration status, APN, and Primary/Secondary endpoint URLs at the start of every 15-minute transmission slot.
+  2. **CIPOPEN Error Translation**: Added human-readable error descriptions for all SIM7600 `+CIPOPEN: 0,<err>` rejection codes (e.g., Code 1: Network error / bearer not ready, Code 2: TCP connect rejected / server unreachable, Code 3: DNS resolution failed, Code 5: Socket in use).
+  3. **Prompt Diagnostics**: Expanded `prompt_rx[100]` capture buffer to log the raw modem reply and exact wait duration in ms if `>` prompt fails.
+  4. **UART TX & Timing**: Logged exact payload byte size, prompt reception time, and UART shift completion time in milliseconds.
+  5. **Response Sanitization & HTTP Code Breakdown**: Increased `log_tmp` to 320 bytes to prevent stack overflow. Trimmed trailing whitespace/newlines, logged all received lines (`HTTP: Rcvd <- ...`), and added explicit status detection for `200 OK`, `400 Bad Request`, `403 Forbidden`, `404 Not Found`, and `500 Server Error`.
+  6. **Body Validation & Flash Tracking**: Logged validation of `SUCCESS`, `REJECTED`, and `INVALID`, remote socket closure (`+CIPCLOSE: 0`), and sample marking confirmation (`HTTP: Present sample marked SENT in Flash`).
+  7. Bumped firmware version strings to `TWS6-1.0.9`.
 
 ---
 

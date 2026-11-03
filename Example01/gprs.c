@@ -1845,7 +1845,15 @@ int http_open_tcp(char *server, int port) {
 					sd_log_http("HTTP: TCP connected (+CIPOPEN: 0,0 OK)!");
 					return 1; /* Success */
 				} else {
-					sprintf(log_tmp, "HTTP: CIPOPEN rejected with error code %d", err_code);
+					const char *err_desc = "Unknown error";
+					if (err_code == 1) err_desc = "Network error / bearer not ready";
+					else if (err_code == 2) err_desc = "TCP connect rejected / server unreachable";
+					else if (err_code == 3) err_desc = "DNS resolution failed";
+					else if (err_code == 4) err_desc = "Invalid parameter";
+					else if (err_code == 5) err_desc = "Socket in use";
+					else if (err_code == 6) err_desc = "Operation not allowed";
+					else if (err_code == 7) err_desc = "Out of memory";
+					sprintf(log_tmp, "HTTP: CIPOPEN rejected: code %d (%s)", err_code, err_desc);
 					sd_log_http(log_tmp);
 					Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1500);
 					return -1;
@@ -1870,7 +1878,7 @@ int http_send_data_single(char *server, int port, char *path) {
 	char *http_data = (char *)0x20080000;
 	http_data[0] = '\0';
 	char http_response[300];
-	char log_tmp[160];
+	char log_tmp[320];
 	char formatted_path[128];
 	int i, lf_recd, timeout, dest_in_count, http_xfer_result;
 	char *matching_ptr;
@@ -1912,10 +1920,9 @@ int http_send_data_single(char *server, int port, char *path) {
 
 	int rawLen = strlen(http_data);
 
-	sprintf(log_tmp, "HTTP: POST %s (Total: %d, Body: %d)", formatted_path, rawLen, (int)strlen(gc_http_data));
+	snprintf(log_tmp, sizeof(log_tmp), "HTTP: Target -> http://%s:%d%s (Total: %d B, Body: %d B)", 
+		server, port, formatted_path, rawLen, (int)strlen(gc_http_data));
 	sd_log_http(log_tmp);
-	sd_log_http("HTTP: Payload ->");
-	sd_log_http(gc_http_data);
 
 	/* 2. Open TCP connection to target server */
 	if (http_open_tcp(server, port) != 1) {
@@ -1926,16 +1933,20 @@ int http_send_data_single(char *server, int port, char *path) {
 	gprs_recv_out_cnt = gprs_recv_in_cnt;
 
 	/* 4. SIM7600 Direct Socket CIPSEND requires exact byte length: AT+CIPSEND=0,<rawLen> */
+	snprintf(log_tmp, sizeof(log_tmp), "HTTP: Sending AT+CIPSEND=0,%d ...", rawLen);
+	sd_log_http(log_tmp);
+
 	sprintf(gprs_xmit_buf, "AT+CIPSEND=0,%d\r\n", rawLen);
 	gprs_xmit_ptr = gprs_xmit_buf;
 	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
 	vTaskDelay(20 / portTICK_RATE_MS);
 
 	/* 5. Search circular buffer for '>' prompt (avoids false-exit on \r\n or echo) */
-	char prompt_rx[64] = {0};
+	char prompt_rx[100] = {0};
 	int rx_idx = 0;
 	int prompt_found = 0;
 	timeout = 5000 / 10;
+	int prompt_wait_ms = 0;
 	while (timeout > 0 && !prompt_found) {
 		while (gprs_recv_in_cnt != gprs_recv_out_cnt) {
 			char ch = *((char *)(0x2007c000 + gprs_recv_out_cnt));
@@ -1950,17 +1961,19 @@ int http_send_data_single(char *server, int port, char *path) {
 		}
 		if (!prompt_found) {
 			vTaskDelay(10 / portTICK_RATE_MS);
+			prompt_wait_ms += 10;
 			timeout--;
 		}
 	}
 
 	if (!prompt_found) {
-		sprintf(log_tmp, "HTTP: No > prompt received from modem! (rx: [%s])", prompt_rx);
+		snprintf(log_tmp, sizeof(log_tmp), "HTTP: ERROR: No > prompt from modem! (waited %d ms, modem rx: [%s])", prompt_wait_ms, prompt_rx);
 		sd_log_http(log_tmp);
 		Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1500);
 		return eXfer_Fail;
 	}
-	sd_log_http("HTTP: > prompt OK, streaming payload...");
+	snprintf(log_tmp, sizeof(log_tmp), "HTTP: > prompt OK (%d ms). Streaming %d bytes over UART...", prompt_wait_ms, rawLen);
+	sd_log_http(log_tmp);
 	vTaskDelay(10 / portTICK_RATE_MS);
 
 	/* 6. Send raw HTTP request payload (exact rawLen bytes, strictly NO Ctrl-Z / 0x1A) */
@@ -1971,16 +1984,21 @@ int http_send_data_single(char *server, int port, char *path) {
 
 	/* Wait until UART ISR finishes transmitting entire payload */
 	int tx_wait = 400;
+	int tx_elapsed = 0;
 	while (*gprs_xmit_ptr && tx_wait > 0) {
 		vTaskDelay(5 / portTICK_RATE_MS);
+		tx_elapsed += 5;
 		tx_wait--;
 	}
 	vTaskDelay(20 / portTICK_RATE_MS);
+	snprintf(log_tmp, sizeof(log_tmp), "HTTP: UART transmission complete (%d ms). Awaiting server response...", tx_elapsed + 20);
+	sd_log_http(log_tmp);
 
 	dest_in_count = 0;
 	http_xfer_result = eXfer_In_Progress;
-	http_response[dest_in_count]=0;
+	http_response[dest_in_count] = 0;
 	int got_200_ok = 0;
+	int lines_received = 0;
 
 	for(timeout=3000; (timeout>0) && (http_xfer_result == eXfer_In_Progress); timeout--){
 		while(((lf_recd = getline((char *)0x2007c000, http_response, &gprs_recv_in_cnt, &gprs_recv_out_cnt,
@@ -1996,13 +2014,36 @@ int http_send_data_single(char *server, int port, char *path) {
 
 		if(lf_recd){
 			lf_recd = 0;
-			if (strlen(http_response) > 0) {
-				sprintf(log_tmp, "HTTP: Rcvd -> %s", http_response);
+			lines_received++;
+
+			// Trim trailing whitespace, \r, \n
+			int rlen = strlen(http_response);
+			while (rlen > 0 && (http_response[rlen - 1] == '\r' || http_response[rlen - 1] == '\n' || http_response[rlen - 1] == ' ')) {
+				http_response[--rlen] = '\0';
+			}
+
+			if (rlen > 0) {
+				snprintf(log_tmp, sizeof(log_tmp), "HTTP: Rcvd <- %s", http_response);
 				sd_log_http(log_tmp);
 			}
+
 			if(look_for_str(http_response, "200 OK") != 0){
 				got_200_ok = 1;
+				sd_log_http("HTTP: Status 200 OK confirmed!");
 			}
+			else if(look_for_str(http_response, "400") != 0 && look_for_str(http_response, "Bad") != 0){
+				sd_log_http("HTTP: Server returned 400 Bad Request!");
+			}
+			else if(look_for_str(http_response, "403") != 0 && look_for_str(http_response, "Forbidden") != 0){
+				sd_log_http("HTTP: Server returned 403 Forbidden!");
+			}
+			else if(look_for_str(http_response, "404") != 0 && look_for_str(http_response, "Not Found") != 0){
+				sd_log_http("HTTP: Server returned 404 Not Found!");
+			}
+			else if(look_for_str(http_response, "500") != 0 && look_for_str(http_response, "Internal") != 0){
+				sd_log_http("HTTP: Server returned 500 Internal Server Error!");
+			}
+
 			if((matching_ptr = look_for_str(http_response, "Date:")) != 0 ){
 				sscanf(matching_ptr, "Date: %[^,], %d %s %d %d:%d", &gprs_new_day,
 						&gprs_new_date, &gprs_new_mon, &gprs_new_year, &gprs_new_hour, &gprs_new_minute);
@@ -2023,6 +2064,9 @@ int http_send_data_single(char *server, int port, char *path) {
 						Next_Date(&gprs_new_date, &gprs_new_month, &gprs_new_year);
 					}
 					gprs_server_date_Ok = 1;
+					snprintf(log_tmp, sizeof(log_tmp), "HTTP: Server Clock Sync -> %04d-%02d-%02d %02d:%02d IST",
+						gprs_new_year, gprs_new_month, gprs_new_date, gprs_new_hour, gprs_new_minute);
+					sd_log_http(log_tmp);
 				}
 			}
 			if((matching_ptr = look_for_str(http_response, "Success")) != 0 || 
@@ -2031,24 +2075,30 @@ int http_send_data_single(char *server, int port, char *path) {
 				http_xfer_result = eXfer_Success;
 				http_status  = 1;
 				gi_http_error = 0;
+				sd_log_http("HTTP: Response body validated -> SUCCESS confirmed!");
 			}
 			else if ((matching_ptr = look_for_str(http_response, "Rejected")) != 0 ){
 				http_xfer_result = eXfer_Rejected;
 				gi_http_error = 1;
+				sd_log_http("HTTP: Response body validated -> REJECTED by server!");
 			}
 			else if ((matching_ptr = look_for_str(http_response, "Invalid")) != 0 ){
 				http_xfer_result = eXfer_Fail;
 				gi_http_error = 1;
+				sd_log_http("HTTP: Response body validated -> INVALID rejected by server!");
 			}
 			else if (look_for_str(http_response, "+CIPCLOSE: 0") != 0 || 
 			         look_for_str(http_response, "CLOSED") != 0) {
+				sd_log_http("HTTP: Remote server closed connection (+CIPCLOSE: 0)");
 				if (got_200_ok) {
 					http_xfer_result = eXfer_Success;
 					http_status  = 1;
 					gi_http_error = 0;
+					sd_log_http("HTTP: Status 200 OK was received -> Treating as SUCCESS");
 				} else {
 					http_xfer_result = eXfer_Fail;
 					gi_http_error = 1;
+					sd_log_http("HTTP: Server closed without 200 OK -> FAILED");
 				}
 			}
 			else
@@ -2064,16 +2114,17 @@ int http_send_data_single(char *server, int port, char *path) {
 
 	if (timeout) {
 		if (http_xfer_result == eXfer_Success) {
-			sd_log_http("HTTP: Result -> SUCCESS (200 OK / Success)");
+			sd_log_http("HTTP: Overall Result -> SUCCESS");
 		} else if (http_xfer_result == eXfer_Rejected) {
-			sd_log_http("HTTP: Result -> REJECTED by server");
+			sd_log_http("HTTP: Overall Result -> REJECTED by server");
 		} else {
-			sd_log_http("HTTP: Result -> FAILED / INVALID");
+			sd_log_http("HTTP: Overall Result -> FAILED / INVALID");
 		}
 		return(http_xfer_result);
 	}
 	else{
-		sd_log_http("HTTP: Result -> TIMEOUT awaiting response");
+		snprintf(log_tmp, sizeof(log_tmp), "HTTP: Overall Result -> TIMEOUT awaiting server response (lines rx: %d)", lines_received);
+		sd_log_http(log_tmp);
 		gprs_timeout_occurred = 1;
 		gi_http_error = 1;
 		return(eXfer_Tmo);
@@ -2084,7 +2135,7 @@ int http_send_data(){
 	int res;
 
 	// Attempt 1: Configured Primary Server (Domain name)
-	sd_log_http("HTTP: Attempt 1 via Primary Domain Name...");
+	sd_log_http("HTTP: [Attempt 1/3] Primary Server (Domain Name)...");
 	res = http_send_data_single(Global_Data_Params.gc_http_server_name1, Global_Data_Params.gi_http_server_port1, Global_Data_Params.gc_http_link1);
 	if (res == eXfer_Success) {
 		return eXfer_Success;
@@ -2093,10 +2144,10 @@ int http_send_data(){
 	// Attempt 2: Direct IP Fallback (KSNDMC direct server 117.216.42.181:80 or Spatika IP)
 	vTaskDelay(1000 / portTICK_RATE_MS);
 	if (look_for_str(Global_Data_Params.gc_http_server_name1, "ksndmc") != 0) {
-		sd_log_http("HTTP: Attempt 2 via KSNDMC Direct IP (117.216.42.181)...");
+		sd_log_http("HTTP: [Attempt 2/3] KSNDMC Direct IP Fallback (117.216.42.181:80)...");
 		res = http_send_data_single("117.216.42.181", 80, Global_Data_Params.gc_http_link1);
 	} else {
-		sd_log_http("HTTP: Attempt 2 via Direct IP (144.91.104.105)...");
+		sd_log_http("HTTP: [Attempt 2/3] Direct IP Fallback (144.91.104.105:80)...");
 		res = http_send_data_single("144.91.104.105", 80, Global_Data_Params.gc_http_link1);
 	}
 	if (res == eXfer_Success) {
@@ -2105,7 +2156,7 @@ int http_send_data(){
 
 	// Attempt 3: Secondary Server Fallback (without destroying cellular attach)
 	vTaskDelay(1000 / portTICK_RATE_MS);
-	sd_log_http("HTTP: Attempt 3 via Secondary Server...");
+	sd_log_http("HTTP: [Attempt 3/3] Secondary Server Backup...");
 	res = http_send_data_single(Global_Data_Params.gc_http_server_name2, Global_Data_Params.gi_http_server_port2, Global_Data_Params.gc_http_link2);
 	return res;
 }
@@ -3000,11 +3051,18 @@ void vGprs_Task( void *pvParameters){
 
 			sd_log_http("========================================");
 			sd_log_http("=== HTTP TELEMETRY TRANSMISSION START ===");
-			sprintf(log_tmp, "Station ID: %s, Firmware: %s, Operator: %s, Signal: %d dBm, Reg: %d",
+			sprintf(log_tmp, "Station ID: %s, Firmware: %s, Model: %s",
 				Global_Data_Params.gc_station_id,
 				Global_Data_Params.gc_version,
+				Global_Data_Params.gc_model);
+			sd_log_http(log_tmp);
+			sprintf(log_tmp, "Cellular: Operator=%s, Signal=%d dBm, Reg=%d, APN=%s",
 				gc_operator_name,
-				gi_signal_level, gi_sim_reg);
+				gi_signal_level, gi_sim_reg, gc_apn_str);
+			sd_log_http(log_tmp);
+			sprintf(log_tmp, "Endpoints: Pri=%s:%d%s, Sec=%s:%d%s",
+				Global_Data_Params.gc_http_server_name1, Global_Data_Params.gi_http_server_port1, Global_Data_Params.gc_http_link1,
+				Global_Data_Params.gc_http_server_name2, Global_Data_Params.gi_http_server_port2, Global_Data_Params.gc_http_link2);
 			sd_log_http(log_tmp);
 
 			prepare_present_rec_for_http_sms();
@@ -3082,6 +3140,8 @@ void vGprs_Task( void *pvParameters){
 
 				// Immediately mark present sample as sent in flash
 				mark_http_sample_sent_in_flash(present_sector_no - 2, present_sample_no);
+				sprintf(log_tmp, "HTTP: Present sample marked SENT in Flash (Sector %d, Sample %d)", present_sector_no - 2, present_sample_no);
+				sd_log_http(log_tmp);
 				vTaskDelay(100 / portTICK_RATE_MS);
 
 				// Check and send backlogs one after the other
