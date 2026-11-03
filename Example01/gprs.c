@@ -1,8 +1,10 @@
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include "globals.h"
 #include "gprs.h"
+#include "lpc17xx_gpio.h"
 #include "lpc17xx_uart.h"
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_libcfg_default.h"
@@ -1179,7 +1181,7 @@ static float parse_nmea_coord(const char *str)
 
 void get_gps_info(void){
 	int iCountTemp;
-	char sim_holder[5];
+	char sim_holder[8];
 	char msg_type;
 
 	gps_found = 0;
@@ -1711,6 +1713,7 @@ int ftp_send_data(){
 	else
 		ftp_status = 0;
 
+	ftp_buff[0] = 0;
 }
 
 
@@ -1861,7 +1864,11 @@ int http_open_tcp(char *server, int port) {
 }
 
 int http_send_data_single(char *server, int port, char *path) {
-	static char http_data[1024];
+	/* Dedicated LPC1768 AHB SRAM Bank 1 (0x20080000, 16KB unreserved hardware SRAM).
+	 * Mapping http_data here eliminates 1024 bytes from RamLoc32 .bss, preventing linker overflow
+	 * and keeping the FreeRTOS task stack unaffected. */
+	char *http_data = (char *)0x20080000;
+	http_data[0] = '\0';
 	char http_response[300];
 	char log_tmp[160];
 	char formatted_path[128];
@@ -2661,7 +2668,7 @@ char *mv2endof_str(char* src, char* match, int len)
 	}
 
 	if (!found)
-		s = -1;
+		s = 0;
 	return (s);
 }
 
@@ -2704,6 +2711,8 @@ void vGprs_Task( void *pvParameters){
 
 
 	*((char *)0x2007c000) = 0;
+	*((char *)0x20080000) = 0; /* Clear AHB Bank 1 HTTP buffer */
+	*((char *)0x20080800) = 0; /* Clear AHB Bank 1 FTP buffer */
 	gprs_recv_loc_buf[0] = 0;
 	gprs_loc_buf_in_cnt = 0;
 

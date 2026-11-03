@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <string.h>
 #include "globals.h"
 #include "FreeRTOS.h"
 #include "task.h"

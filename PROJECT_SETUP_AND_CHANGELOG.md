@@ -315,7 +315,22 @@ To effortlessly synchronize changes between your development laptop and office c
   2. Added workspace `tools/arm-toolchain/bin/arm-none-eabi-gcc` auto-detection to `Example01/build.sh` and `LPC845/build.sh` so full C compilation verification runs natively on any machine.
   3. Added `tools/` to `.gitignore` so local compilers remain excluded from Git tracking.
 
-
+### 17. RamLoc32 `.bss` Overflow Fix & AHB SRAM Bank 1 Relocation (`v1.0.7`)
+- **Problem**:
+  1. LPC1768 local RAM (`RamLoc32`) is strictly 32 KB (`0x10000000`–`0x10007FFF`, 32,768 bytes). FreeRTOS heap (`configTOTAL_HEAP_SIZE` = 16 KB) plus global structs (`Fatfs`, `File_Sd`, `Global_Data_Params`, etc.) left only 4 bytes of free space in the recovered codebase.
+  2. In `v1.0.3`, `static char http_data[1024]` was introduced into `Example01/gprs.c`, and `gc_http_data` was sized to 256 bytes. When linking with MCUXpresso IDE, the linker failed with:
+     ```
+     Example01.axf section '.bss' will not fit in region 'RamLoc32'
+     region 'RamLoc32' overflowed by 1124 bytes
+     ```
+  3. Furthermore, missing standard header inclusions (`<stdio.h>`, `"lpc17xx_gpio.h"`, `<string.h>`, `"ff.h"`) generated dozens of implicit declaration warnings for `sprintf`, `sscanf`, `GPIO_ClearValue`, `GPIO_SetValue`, `GPIO_SetDir`, `f_unlink`, etc.
+- **Fix**:
+  1. Relocated `http_data` in `http_send_data_single()` to dedicated LPC1768 AHB SRAM Bank 1 (`0x20080000`), a 16 KB unreserved on-chip hardware SRAM bank (`LPC_AHBRAM1_BASE`). This completely removed 1024 bytes from `RamLoc32` `.bss` while keeping the FreeRTOS task stack unaffected.
+  2. Relocated `ftp_buff` to AHB SRAM Bank 1 (`0x20080800`), removing another 1064 bytes from `RamLoc32` `.bss`.
+  3. Sized `gc_http_data` back to 150 bytes in `Example01/memory.h` (matching its original footprint and comfortably accommodating the ~127-byte HTTP payload).
+  4. Added explicit zero-termination for both AHB Bank 1 buffers in `vGprs_Task` (`*((char *)0x20080000) = 0; *((char *)0x20080800) = 0;`).
+  5. Total RAM freed from `RamLoc32`: 2,194 bytes, eliminating the 1124-byte overflow and providing **1,070 bytes of clean free headroom** in `RamLoc32`.
+  6. Added all missing header includes and declarations (`<stdio.h>`, `"lpc17xx_gpio.h"`, `<string.h>`, `"ff.h"`, `mark_http_sample_sent_in_flash()`), fixed `sim_holder[8]` buffer overflow in `get_gps_info()`, and fixed `mv2endof_str()` pointer return (`s = 0`). All source files now compile with zero errors and zero warnings.
 
 ---
 
@@ -323,6 +338,7 @@ To effortlessly synchronize changes between your development laptop and office c
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
 | :--- | :--- | :--- |
+| **Adding large static buffers to `RamLoc32`** | LPC1768 `RamLoc32` has only 32 KB and is nearly full with FreeRTOS heap and FAT filesystem structures. Adding static buffers overflows `RamLoc32` `.bss`. | Relocate large telemetry buffers (`http_data`, `ftp_buff`) to AHB SRAM Bank 1 (`0x20080000`–`0x20083FFF`, 16 KB unreserved). |
 | **Relinking application to `ORIGIN = 0x00000000`** | Application is ~138 KB. Starting at `0x0` collides with Sector 1 (`PARAM_SECTOR`) and Sectors 2–8 (`days_sector`). Writing IAP logs erases application code! | Keep application at `0x00018000` (Sector 17). Use the Sector 0 Boot Stub at `0x00000000`. |
 | **Flashing application at `0x00018000` without Sector 0 Boot Stub** | LPC1768 hardware ROM only looks at `0x00000000` on reset. Without a bootloader or stub, CPU never jumps to `0x18000`. | Always flash `LPC1768_TWS_FULL.hex`, which includes the boot stub. |
 | **Missing Vector 7 Checksum at offset `0x1C`** | NXP LPC microcontrollers require `Vector 7 = 0 - sum(Vector[0..6])`. If invalid, the ROM halts or enters ISP boot mode. | Always run `scripts/lpc_checksum.py` on the binary. |

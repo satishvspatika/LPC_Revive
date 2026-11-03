@@ -16,7 +16,7 @@
 
 
 char gc_sdc_data[150];
-char gc_http_data[256];
+char gc_http_data[150];
 char gc_sms_data[150];
 
 enum CMD_MEMORY_DISK {eNop, eLog, eGetLast,
@@ -74,4 +74,5 @@ int allocate_space(uint8_t curDate, uint8_t curMonth, uint16_t curYear);
 //int day_of_week(int dd, int mm, int yy);
 
 void store_data_in_disk(void);
+int mark_http_sample_sent_in_flash(int sector_idx, int sample_idx);
 

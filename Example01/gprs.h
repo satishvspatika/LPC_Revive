@@ -27,7 +27,9 @@
 
 int gi_dota_state, gi_dota_error;
 int gi_gps_error;
-char ftp_buff[1064];
+
+/* Relocate ftp_buff to LPC1768 AHB SRAM Bank 1 (0x20080800), freeing 1064 bytes in RamLoc32 .bss */
+#define ftp_buff ((char *)0x20080800)
 
 
 enum {eHttp_Post, eFtp_Post, eFtp_Get, eHttp_Get};
