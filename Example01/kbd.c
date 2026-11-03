@@ -111,24 +111,20 @@ void kbd_release_pins_for_sleep(void)
 int Kbd_Scan(void) {
 	int iRow_No; // Variable to store the row number
 	int iCol_No; // Variable to store the column number
-	int iKey_Value; // Variable to store the key value calculated
+	int iKey_Value = 0; // Variable to store the key value calculated
 
 	for (iRow_No = 0; iRow_No < MAX_ROWS; iRow_No++) {
 		Output_Row(iRow_No); // Output bit patterns to locate the key
-		vTaskDelay(1 / portTICK_RATE_MS); //This delay is added for some old display not working properly
+		for (volatile int d = 0; d < 300; d++); // Fast GPIO pin settling delay (~10us)
 		iCol_No = Read_Col_Pressed(); // Read the active coloumn value
 
-
-		iKey_Value = 0;
 		if (iCol_No) {
-			iKey_Value = iRow_No * MAX_ROWS + iCol_No;//if there is any active column then calculate the key value
+			iKey_Value = iRow_No * MAX_ROWS + iCol_No; // Calculate key value
 			break;
 		}
-
 	}
 
 	return iKey_Value; // Return the key value
-
 }
 
 /*-------------------------------------------------------------------------------------------------------------------*
@@ -223,76 +219,26 @@ int Read_Col_Pressed(void) {
 
 void vKbd_Task(void *pvParameters)
 {
-	int iOld_Key; // Variable to hold the value of old key
-	int iNew_Key; // Variable to hold the value of new key
-	int iDebounce_Count; // Variable to hold the debounce count
-	int iKey_Pressed;
-	int no_key_timeout;
+	int iOld_Key = 0;
+	int iNew_Key = 0;
 
 	XITC_Kbd_Log.sig_key = 0;
 	XITC_Kbd_Log.key_value = 0;
 	init_kbd_pins();
-
-	portTickType xLastWakeTime;
-
-
-
-	iOld_Key = 0;
-	iNew_Key = 0;
-	iDebounce_Count = 0;
-	iKey_Pressed = 0;
 	kbd_task_started = 1;
-	no_key_timeout = 0;
 
-
-	static int pins_released = 0;
 	for (;;) {
-		xLastWakeTime = xTaskGetTickCount();//Initialize with the correct tick count
-		vTaskDelayUntil(&xLastWakeTime, 10 / portTICK_RATE_MS );
+		vTaskDelay(20 / portTICK_RATE_MS);
 
-		if (shutdown_pwr == 1) {
-			if (!pins_released) {
-				kbd_release_pins_for_sleep();
-				pins_released = 1;
-			}
-			vTaskDelay(200 / portTICK_RATE_MS);
-			continue;
-		} else if (pins_released) {
-			init_kbd_pins();
-			pins_released = 0;
-		}
-
-		iNew_Key = Kbd_Scan(); // Scan to get the key value
-		if((iNew_Key == 0) && (iOld_Key != 0)){
-			no_key_timeout = MAX_TIME_KEYTIMEOUT;
-		}
+		iNew_Key = Kbd_Scan(); // Scan matrix for pressed key
 		if (iNew_Key) {
 			if (iNew_Key != iOld_Key) {
-				iOld_Key = iNew_Key; // Assign the new key value to the old one
-				iDebounce_Count = 2; // Initialize the debounce count (fast responsive tap)
-			} else if (iDebounce_Count) {
-				iDebounce_Count--; // Decrement the debounce count
-				if (0 == iDebounce_Count) {
-					iKey_Pressed = iNew_Key; // If the debounce count is zero then assign the value the variable
-
-				}
-			}
-
-			if (iKey_Pressed) {
-				XITC_Kbd_Log.key_value = iKey_Pressed;
-				iKey_Pressed = 0;
+				iOld_Key = iNew_Key;
+				XITC_Kbd_Log.key_value = iNew_Key;
 				XITC_Kbd_Log.sig_key = 1;
 			}
-		}
-		else
+		} else {
 			iOld_Key = 0;
-
-		if( (iOld_Key == 0) && (no_key_timeout > 0) ){
-			no_key_timeout--;
-			if(!no_key_timeout){
-				XITC_Kbd_Log.key_value = KEY_TIMEOUT;
-				XITC_Kbd_Log.sig_key = 1;
-			}
 		}
 	}
 }

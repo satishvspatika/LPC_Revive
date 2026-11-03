@@ -1909,13 +1909,8 @@ int http_send_data_single(char *server, int port, char *path) {
 	}
 	formatted_path[sizeof(formatted_path) - 1] = 0;
 
-	/* Determine correct Host header: match IP to respective domain for virtual hosting */
+	/* Determine Host header: use exact target server (RFC 7230, matching ESP32 firmware) */
 	const char *host_name = server;
-	if (strcmp(server, "117.216.42.181") == 0) {
-		host_name = Global_Data_Params.gc_http_server_name1;
-	} else if (strcmp(server, "144.91.104.105") == 0) {
-		host_name = Global_Data_Params.gc_http_server_name2;
-	}
 
 	int offset = snprintf(http_data, 1024, "POST %s HTTP/1.1\r\n", formatted_path);
 	if (port == 80) {
@@ -2102,8 +2097,9 @@ int http_send_data_single(char *server, int port, char *path) {
 				sd_log_http("HTTP: Response body validated -> INVALID rejected by server!");
 			}
 			else if (look_for_str(http_response, "+CIPCLOSE: 0") != 0 || 
+			         look_for_str(http_response, "+IPCLOSE: 0") != 0 || 
 			         look_for_str(http_response, "CLOSED") != 0) {
-				sd_log_http("HTTP: Remote server closed connection (+CIPCLOSE: 0)");
+				sd_log_http("HTTP: Remote server closed connection (+IPCLOSE / +CIPCLOSE)");
 				if (got_200_ok) {
 					http_xfer_result = eXfer_Success;
 					http_status  = 1;
@@ -2148,31 +2144,33 @@ int http_send_data_single(char *server, int port, char *path) {
 int http_send_data(){
 	int res;
 
-	// Attempt 1: Configured Primary Server (Domain name)
-	sd_log_http("HTTP: [Attempt 1/3] Primary Server (Domain Name)...");
-	res = http_send_data_single(Global_Data_Params.gc_http_server_name1, Global_Data_Params.gi_http_server_port1, Global_Data_Params.gc_http_link1);
-	if (res == eXfer_Success) {
-		return eXfer_Success;
-	}
-
-	// Attempt 2: Direct IP Fallback (KSNDMC direct server 117.216.42.181:80 or Spatika IP)
-	vTaskDelay(1000 / portTICK_RATE_MS);
+	// Check if this is a KSNDMC profile (Direct IP 117.216.42.181 first, Domain fallback second, NO Spatika)
 	if (look_for_str(Global_Data_Params.gc_http_server_name1, "ksndmc") != 0) {
-		sd_log_http("HTTP: [Attempt 2/3] KSNDMC Direct IP Fallback (117.216.42.181:80)...");
+		// Attempt 1: Direct IP (ultra-fast, no DNS lookup, matching ESP32 firmware)
+		sd_log_http("HTTP: [Attempt 1/2] KSNDMC Direct IP (117.216.42.181:80)...");
 		res = http_send_data_single("117.216.42.181", 80, Global_Data_Params.gc_http_link1);
-	} else {
-		sd_log_http("HTTP: [Attempt 2/3] Direct IP Fallback (144.91.104.105:80)...");
-		res = http_send_data_single("144.91.104.105", 80, Global_Data_Params.gc_http_link1);
-	}
-	if (res == eXfer_Success) {
-		return eXfer_Success;
-	}
+		if (res == eXfer_Success) {
+			return eXfer_Success;
+		}
 
-	// Attempt 3: Secondary Server Fallback (without destroying cellular attach)
-	vTaskDelay(1000 / portTICK_RATE_MS);
-	sd_log_http("HTTP: [Attempt 3/3] Secondary Server Backup...");
-	res = http_send_data_single(Global_Data_Params.gc_http_server_name2, Global_Data_Params.gi_http_server_port2, Global_Data_Params.gc_http_link2);
-	return res;
+		// Attempt 2: Domain Name Fallback
+		vTaskDelay(1000 / portTICK_RATE_MS);
+		sd_log_http("HTTP: [Attempt 2/2] KSNDMC Primary Domain (rtdas.ksndmc.net)...");
+		res = http_send_data_single(Global_Data_Params.gc_http_server_name1, Global_Data_Params.gi_http_server_port1, Global_Data_Params.gc_http_link1);
+		return res;
+	} else {
+		// Non-KSNDMC profile (e.g. Bihar TRG): Domain first, secondary server second
+		sd_log_http("HTTP: [Attempt 1/2] Primary Server...");
+		res = http_send_data_single(Global_Data_Params.gc_http_server_name1, Global_Data_Params.gi_http_server_port1, Global_Data_Params.gc_http_link1);
+		if (res == eXfer_Success) {
+			return eXfer_Success;
+		}
+
+		vTaskDelay(1000 / portTICK_RATE_MS);
+		sd_log_http("HTTP: [Attempt 2/2] Secondary Server Fallback...");
+		res = http_send_data_single(Global_Data_Params.gc_http_server_name2, Global_Data_Params.gi_http_server_port2, Global_Data_Params.gc_http_link2);
+		return res;
+	}
 }
 
 

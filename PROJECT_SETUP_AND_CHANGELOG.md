@@ -465,6 +465,40 @@ To effortlessly synchronize changes between your development laptop and office c
   4. **Independent Modem Power-Down**: Guarded modem shutdown so SIM7600 powers off (`AT+CPOF` turns off NETLIGHT) even if the operator is actively interacting with the UI.
   5. Bumped firmware version strings to `TWS6-1.0.16`.
 
+### 27. Instant Boot, Non-Locking Keypad, and KSNDMC IP-First Telemetry (v1.0.17)
+- **Problem**:
+  1. **LCD Boot Delay (~8s)**:
+     - `main.c` had a blocking 4000x10000 crude loop that burned ~2 seconds before FreeRTOS started.
+     - `vUi_Task` waited up to 2.5s (`boot_wait`) polling for an LPC845 `$D` packet, and then waited 1.5s on the splash screen.
+  2. **Unresponsive Keypad**:
+     - `Kbd_Scan()` executed `vTaskDelay(1)` for each of the 3 matrix rows, triggering context switches and taking ~3–30ms per scan.
+     - When background telemetry finished (~15s after boot), `memory.c` checked `if (!gUi_Active)` and called `system_enter_sleep()`.
+     - `system_enter_sleep()` set `shutdown_pwr = 1` and called `kbd_release_pins_for_sleep()`, tri-stating all keypad pins into High-Z.
+     - `vKbd_Task` entered `while (shutdown_pwr == 1)`. On bench/USB power where the LPC845 never physically cut power, the keypad was permanently frozen!
+  3. **KSNDMC Server Endpoint Mismatch**:
+     - The telemetry loop included an Attempt 3 fallback to `rtdas.spatika.net:80/tws_gprs/update_tws_data_v2`.
+     - Per the authoritative ESP32 reference (`httpSet[6]`), KSNDMC TWS stations transmit exclusively to KSNDMC servers (`117.216.42.181` / `rtdas.ksndmc.net`), with Direct IP first and zero Spatika backup.
+     - `Host:` header rewriting sent `Host: rtdas.ksndmc.net` when connecting to `117.216.42.181`, causing the server to close the socket with `+IPCLOSE: 0,1`.
+     - The response parser did not match `+IPCLOSE: 0`, causing the modem loop to hang for 30s before reporting timeout.
+  4. **SD Card File Handle Leak in `check_sdc_status()`**:
+     - If "Welcome\r\n" was matched, the loop executed `break;` without calling `f_close(&File_Sd)`.
+- **Fix**:
+  1. **Instant LCD Boot (<400ms)**:
+     - Replaced crude loop in `main.c` with a fast ~20ms settling delay.
+     - Removed the 2.5-second `boot_wait` in `vUi_Task`; display initializes immediately and splash screen displays for 300ms before showing `SCR_STATION`.
+  2. **Continuous Keypad Scanning with Zero Deadlock**:
+     - Replaced `vTaskDelay(1)` in `Kbd_Scan()` with a fast ~10 µs pin settling loop (`d < 300`).
+     - Removed `shutdown_pwr` gating and `kbd_release_pins_for_sleep()` from `vKbd_Task`. Keypad matrix is continuously scanned every 20ms and never tri-stated.
+     - Instant tap detection: key transitions immediately post `key_value` and `sig_key = 1` to UI.
+     - Completely eliminated automatic `system_enter_sleep()` from `memory.c`. Telemetry completion turns off the modem (`AT+CPOF`) and NETLIGHT LED, but keeps LPC1768 UI and keypad running.
+  3. **KSNDMC Direct IP First & Standard RFC 7230 Host Header**:
+     - Attempt 1: Direct IP (`117.216.42.181:80`) with `Host: 117.216.42.181`.
+     - Attempt 2: Domain fallback (`rtdas.ksndmc.net:80`) with `Host: rtdas.ksndmc.net`.
+     - Both point to `/tws_gprs/update_tws_data_v3` with key `climate4pTWS`. Spatika backup removed for KSNDMC profiles.
+     - Added immediate `+IPCLOSE: 0` detection to prevent 30s wasted timeout on remote connection termination.
+  4. **Fixed SD Card Handle Leak**: Ensured `f_close(&File_Sd)` is called unconditionally upon completing file read in `check_sdc_status()`.
+  5. Bumped firmware version strings to `TWS6-1.0.17`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)

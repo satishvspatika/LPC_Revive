@@ -882,40 +882,16 @@ void vUi_Task(void *pvParameters)
 
 	XITC_Ui_Disk.command = eITC_Ui_Disk_Nop;
 
-	/* Determine boot trigger from LPC845 $D packet:
-	 *   usb_lcd_pwr == 'U' -> LCD 5V rail active (Manual power switch ON or DSP key wake)
-	 *   usb_lcd_pwr == 'u' -> LCD 5V rail off (15-minute background telemetry wake)
-	 * Wait up to 2.5s for the first $D packet to arrive from LPC845.
-	 */
-	int boot_wait;
-	for (boot_wait = 0; boot_wait < 50; boot_wait++) {
-		if (usb_lcd_pwr == 'U' || usb_lcd_pwr == 'u')
-			break;
-		vTaskDelay(50 / portTICK_RATE_MS);
-	}
+	/* Turn on display and show splash screen immediately (<300ms) */
+	wake_display();
+	ui_send_lcd(WELCOME_STR1, " INITIALIZING.. ");
+	vTaskDelay(300 / portTICK_RATE_MS);
 
-	if (usb_lcd_pwr == 'u') {
-		/* 15-minute background telemetry wake: keep LCD & backlight completely OFF */
-		lcd_active = 0;
-		gUi_Active = 0;
-		wait_for_lcd_idle();
-		XITC_Ui_Lcd.lcd_cmd = eLcd_Off;
-		XITC_Ui_Lcd.sig = 1;
-		wait_for_lcd_idle();
-		need_render = 0;
-	} else {
-		/* Manual hard-switch power-on or DSP key wake (usb_lcd_pwr == 'U' or timeout):
-		 * Turn on display and show splash screen */
-		wake_display();
-		ui_send_lcd(WELCOME_STR1, " INITIALIZING.. ");
-		vTaskDelay(1500 / portTICK_RATE_MS);
-
-		/* Transition cleanly from splash to Station ID home screen */
-		current_screen = SCR_STATION;
-		render_screen(current_screen, line1, line2);
-		ui_send_lcd(line1, line2);
-		need_render = 0;
-	}
+	/* Transition cleanly from splash to Station ID home screen */
+	current_screen = SCR_STATION;
+	render_screen(current_screen, line1, line2);
+	ui_send_lcd(line1, line2);
+	need_render = 0;
 
 	for (;;) {
 		/* Watchdog heartbeat */
@@ -935,10 +911,6 @@ void vUi_Task(void *pvParameters)
 			if (!lcd_active) {
 				wake_display();
 				need_render = 1;
-				vTaskDelay(100 / portTICK_RATE_MS);
-				render_screen(current_screen, line1, line2);
-				ui_send_lcd(line1, line2);
-				continue;
 			}
 
 			if (current_mode == UI_MODE_CALIB) {

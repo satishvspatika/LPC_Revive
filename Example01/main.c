@@ -78,9 +78,8 @@
 int main( void )
 {
 
-	int i, j;
-	for(i=0; i < 4000; i++)
-		for (j=0; j < 10000; j++);
+	/* Fast startup settling delay (~20ms) instead of multi-second loop */
+	for (volatile int d = 0; d < 50000; d++);
 
 
 	log_task_started = 0;

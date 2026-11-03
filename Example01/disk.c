@@ -111,7 +111,6 @@ void check_sdc_status(void){
 	fresult=f_open(&File_Sd, "spatika.txt", FA_OPEN_EXISTING | FA_READ);
 	if (fresult == FR_OK){
 		while((fgets_ret_val = f_gets(read_buf,sizeof(read_buf),&File_Sd))!= (char *)-1){
-
 			matching_ptr = look_for_str(read_buf, "Welcome\r\n");
 			if(matching_ptr != 0){
 				gi_disk_ok = 1;
@@ -120,8 +119,8 @@ void check_sdc_status(void){
 			if(f_eof(&File_Sd)){
 				break;
 			}
-			f_close(&File_Sd);
 		}
+		f_close(&File_Sd);
 	}
 	else
 		gi_disk_ok = 0;
