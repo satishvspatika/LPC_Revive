@@ -161,7 +161,7 @@ static void render_screen(int scr_id, char *line1, char *line2)
 #else
 		snprintf(line1, 17, "  KSNDMC - TRG  ");
 #endif
-		snprintf(line2, 17, "    ID:%-4.4s     ", sid);
+		snprintf(line2, 17, "ID:%-4.4s K:%d C:%d", sid, dbg_last_key, (int)((LPC_GPIO0->FIOPIN >> 20) & 0x07));
 		break;
 	}
 
@@ -904,6 +904,10 @@ void vUi_Task(void *pvParameters)
 			if (!lcd_active) {
 				wake_display();
 				need_render = 1;
+				if (!gprs_modem_active) {
+					select_sim_0();
+					gprs_modem_active = 1;
+				}
 				/* If key was DSP key, wake is already achieved; do not toggle back off */
 				if (key == eDisp_Key) {
 					continue;
@@ -1013,6 +1017,7 @@ void vUi_Task(void *pvParameters)
 					} else if (current_screen == SCR_LAST_LOG || current_screen == SCR_ACT_SEND_HTTP) {
 						/* Immediate on-demand HTTP transmission (Live record + Flash backlogs) */
 						ui_send_lcd("TRANSMITTING...", "LIVE + BACKLOGS ");
+						gi_manual_http_trigger = 1;
 						gi_data_ready_for_report = 1;
 						vTaskDelay(1500 / portTICK_RATE_MS);
 					} else if (current_screen == SCR_GPS_LOC) {
@@ -1075,6 +1080,11 @@ void vUi_Task(void *pvParameters)
 				gUi_Active = 0;
 				if (lcd_active) {
 					sleep_display();
+				}
+				/* Shut down SIM7600 RF & baseband to stop NETLIGHT and save battery */
+				if (!gi_data_ready_for_report && gprs_modem_active) {
+					gprs_send_cmd_direct("AT+CPOF\r\n");
+					gprs_modem_active = 0;
 				}
 			}
 

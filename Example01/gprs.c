@@ -2806,6 +2806,8 @@ void vGprs_Task( void *pvParameters){
 	ftp_line_cnt = 0;
 	ftp_rec_no = 0;
 	get_gps = 0;
+	gprs_modem_active = 1;
+	gi_manual_http_trigger = 0;
 
 	// init pins and then UART meant for GPRS
 	define_gprs_uart_pins((LPC_UART_TypeDef*) GPRS_UART);
@@ -3091,11 +3093,12 @@ void vGprs_Task( void *pvParameters){
 
 			/* Spatika / KSNDMC 62-Second Slot Boundary Guard (Rule 1):
 			 * KSNDMC and Spatika aggregate servers reject packets received < 62s
-			 * after the 15-min slot boundary. Hold until T+1m02s before connecting. */
+			 * after the 15-min slot boundary. Hold until T+1m02s before connecting.
+			 * Bypass guard for manual on-demand triggers from the operator UI. */
 			int m_into = xPresent_Date_Time.minute % 15;
 			int s_into = xPresent_Date_Time.second;
 			int total_elapsed = (m_into * 60) + s_into;
-			if (total_elapsed < 62) {
+			if (!gi_manual_http_trigger && total_elapsed < 62) {
 				int wait_sec = 62 - total_elapsed;
 				sprintf(log_tmp, "HTTP: Slot elapsed %ds (< 62s). Holding %ds to reach T+1m02s...", total_elapsed, wait_sec);
 				sd_log_http(log_tmp);
@@ -3106,6 +3109,7 @@ void vGprs_Task( void *pvParameters){
 					taskEXIT_CRITICAL();
 				}
 			}
+			gi_manual_http_trigger = 0;
 
 			//	if((http_server_connected == 0) && (gi_sim_state == 1)){
 			if((http_server_connected == 0) && (gi_sim_state == 1) && (gi_sim_reg == 1)){
@@ -3263,6 +3267,7 @@ void vGprs_Task( void *pvParameters){
 			vTaskDelay(100 / portTICK_RATE_MS);
 			sd_log_http("NET: Shutting down SIM7600 cellular engine (AT+CPOF)...");
 			Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
+			gprs_modem_active = 0;
 			sd_log_http("NET: Modem powered down. NETLIGHT LED off. Entering sleep.");
 			vTaskDelay(200 / portTICK_RATE_MS);
 

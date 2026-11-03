@@ -501,30 +501,7 @@ To effortlessly synchronize changes between your development laptop and office c
 
 ---
 
-### Section 29: Restoring 1ms Keypad RC Line Settling, 1-Tick Fast Debounce, and Full System Flow (v1.0.19)
-
-- **Release Date**: November 3, 2026
-- **Firmware Version**: `TWS6-1.0.19`
-- **Key Enhancements & Bug Fixes**:
-  1. **Restored 1ms Keypad Matrix Line Settling Delay (`vTaskDelay(1 / portTICK_RATE_MS)`)**:
-     - *Issue*: In v1.0.17, the settling delay between `Output_Row(iRow)` and `Read_Col_Pressed()` was replaced by `for (volatile int d = 0; d < 300; d++);` (~25 µs). Because the LPC1768 keypad matrix uses internal pull-ups (~50 kΩ) with ribbon cable capacitance, 25 µs was far too short to discharge the column lines below the logic 0 input threshold (0.3 × VDD = 0.99 V). As a result, `Read_Col_Pressed()` always read 1s (all columns unpressed), making Up, Down, Menu, Set, Back, and Disp completely unresponsive.
-     - *Fix*: Restored `vTaskDelay(1 / portTICK_RATE_MS)` inside `Kbd_Scan()`, giving the line a full 1 ms (1000 µs) to pull down to 0V.
-  2. **Single-Shot Port Read in `Read_Col_Pressed()`**:
-     - *Issue*: Reading `GPIO_ReadValue(0)` three separate times introduced multi-cycle skew.
-     - *Fix*: Reads `uint32_t port0 = GPIO_ReadValue(KBD_COL0_PORT);` once and evaluates masks simultaneously.
-  3. **High-Responsiveness 1-Tick Debounce Confirmation**:
-     - *Issue*: No debounce filter in `vKbd_Task` allowed switch contact bounce to corrupt key release detection.
-     - *Fix*: Re-implemented debounce with `iDebounce_Count = 1` (13 ms latency) for instant responsive tapping while maintaining 100% bounce immunity. Handled `shutdown_pwr == 1` pin release and recovery.
-  4. **Immediate LCD Task Service Time**:
-     - *Issue*: `vLcd_Task` polled `XITC_Ui_Lcd.sig` every 2 ms.
-     - *Fix*: Reduced idle sleep to `vTaskDelay(1 / portTICK_RATE_MS)` so LCD rendering and screen navigation transitions execute within 1 ms.
-  5. **Telemetry & Logging Flow Clarification**:
-     - Clarified that in standard operation, SIM7600 registers to the cellular network at startup (NETLIGHT blinking slowly), and automatic SD card logging + HTTP telemetry transmission occurs at the scheduled 15-minute slot boundary (:00, :15, :30, :45) when sensor packets arrive from LPC845, or on-demand when initiated from the UI menu.
-  6. **Bumped Firmware Version**: Updated to `TWS6-1.0.19`.
-
----
-
-### Section 28: Bulletproof HD44780 LCD Timing, Non-Cutting Display Sleep, and Zero-Surprise System Flow (v1.0.18)
+### 28. Bulletproof HD44780 LCD Timing, Non-Cutting Display Sleep, and Zero-Surprise System Flow (v1.0.18)
 
 - **Release Date**: November 3, 2026
 - **Firmware Version**: `TWS6-1.0.18`
@@ -552,6 +529,62 @@ To effortlessly synchronize changes between your development laptop and office c
      - *Issue*: `check_sdc_status()` was only called once at boot. If SD card was inserted late or needed settling, `gi_disk_ok` stayed 0 forever, skipping all daily telemetry logging (`store_data_in_disk()`). In addition, 2-digit years were not normalized, resulting in files named `03110026.txt`.
      - *Fix*: `vDisk_Task` retries `check_sdc_status()` every 10 seconds if `!gi_disk_ok`. `store_data_in_disk()` auto-retries `check_sdc_status()` before writing. Years are normalized to 4-digit (e.g. 26 -> 2026), guaranteeing daily log files named `DDMM2026.txt`.
   6. **Bumped Firmware Version**: Updated to `TWS6-1.0.18`.
+
+---
+
+### 29. Restoring 1ms Keypad RC Line Settling, 1-Tick Fast Debounce, and Full System Flow (v1.0.19)
+
+- **Release Date**: November 3, 2026
+- **Firmware Version**: `TWS6-1.0.19`
+- **Key Enhancements & Bug Fixes**:
+  1. **Restored 1ms Keypad Matrix Line Settling Delay (`vTaskDelay(1 / portTICK_RATE_MS)`)**:
+     - *Issue*: In v1.0.17, the settling delay between `Output_Row(iRow)` and `Read_Col_Pressed()` was replaced by `for (volatile int d = 0; d < 300; d++);` (~25 µs). Because the LPC1768 keypad matrix uses internal pull-ups (~50 kΩ) with ribbon cable capacitance, 25 µs was far too short to discharge the column lines below the logic 0 input threshold (0.3 × VDD = 0.99 V). As a result, `Read_Col_Pressed()` always read 1s (all columns unpressed), making Up, Down, Menu, Set, Back, and Disp completely unresponsive.
+     - *Fix*: Restored `vTaskDelay(1 / portTICK_RATE_MS)` inside `Kbd_Scan()`, giving the line a full 1 ms (1000 µs) to pull down to 0V.
+  2. **Single-Shot Port Read in `Read_Col_Pressed()`**:
+     - *Issue*: Reading `GPIO_ReadValue(0)` three separate times introduced multi-cycle skew.
+     - *Fix*: Reads `uint32_t port0 = GPIO_ReadValue(KBD_COL0_PORT);` once and evaluates masks simultaneously.
+  3. **High-Responsiveness 1-Tick Debounce Confirmation**:
+     - *Issue*: No debounce filter in `vKbd_Task` allowed switch contact bounce to corrupt key release detection.
+     - *Fix*: Re-implemented debounce with `iDebounce_Count = 1` (13 ms latency) for instant responsive tapping while maintaining 100% bounce immunity. Handled `shutdown_pwr == 1` pin release and recovery.
+  4. **Immediate LCD Task Service Time**:
+     - *Issue*: `vLcd_Task` polled `XITC_Ui_Lcd.sig` every 2 ms.
+     - *Fix*: Reduced idle sleep to `vTaskDelay(1 / portTICK_RATE_MS)` so LCD rendering and screen navigation transitions execute within 1 ms.
+  5. **Telemetry & Logging Flow Clarification**:
+     - Clarified that in standard operation, SIM7600 registers to the cellular network at startup (NETLIGHT blinking slowly), and automatic SD card logging + HTTP telemetry transmission occurs at the scheduled 15-minute slot boundary (:00, :15, :30, :45) when sensor packets arrive from LPC845, or on-demand when initiated from the UI menu.
+  6. **Bumped Firmware Version**: Updated to `TWS6-1.0.19`.
+
+---
+
+### 30. Instant Leading-Edge Keypad Trigger, Real-Time Matrix Diagnostics, Inactivity Modem Shutdown, and Instant On-Demand HTTP (v1.0.20)
+
+- **Release Date**: November 3, 2026
+- **Firmware Version**: `TWS6-1.0.20`
+- **Key Enhancements & Bug Fixes**:
+  1. **Instant First-Strike Leading-Edge Key Trigger**:
+     - *Issue*: Requiring consecutive matching scans (`iDebounce_Count = 1`) dropped single quick taps whenever mechanical switch contact bounce created a 1-sample flutter (0 reading), wiping `iOld_Key` back to 0. Operators had to press a key 2 to 3 times before it registered.
+     - *Fix*: Re-architected `vKbd_Task` to use leading-edge trigger: when `iNew_Key != 0 && iOld_Key == 0`, key event is dispatched immediately on the very first scan cycle. A 2-cycle release debounce filter (`release_count >= 2`, ~25 ms) ensures contact chatter during release never produces false repeats or double-presses.
+  2. **Direct Hardware Register Writes for Column 1 (`P0.21`) & All Keypad Matrix Pins**:
+     - *Issue*: Column 1 (`P0.21`, Up/Down/Set) was failing to register on some hardware revisions due to pin mode register default overrides.
+     - *Fix*: Configured direct LPC1768 hardware registers in `init_kbd_pins()`:
+       - Inputs with internal pull-ups: `P0.20`, `P0.21`, `P0.22` via `PINSEL1`, `PINMODE1`, `PINMODE_OD0`, `FIODIR`, `FIOMASK`.
+       - Push-pull outputs: `P3.25`, `P3.26` via `PINSEL7`, `PINMODE7`, `PINMODE_OD3`, `FIODIR`, `FIOSET`.
+       - Push-pull output: `P1.21` via `PINSEL3`, `PINMODE3`, `PINMODE_OD1`, `FIODIR`, `FIOSET`.
+       - Optimized row driving and column sampling with single-cycle `FIOSET`/`FIOCLR` and direct `FIOPIN` register access.
+  3. **Live LCD Matrix Diagnostics on Station Home Screen**:
+     - *Feature*: Station screen Line 2 now displays real-time key and column matrix diagnostic values:
+       `ID:1922 K:<key_id> C:<raw_col_bits>`
+       - Idle: `C:7` (binary `111` - P0.22, P0.21, P0.20 all HIGH)
+       - Col 2 pressed (Right, Calib, Disp): `C:6` (binary `110`)
+       - Col 1 pressed (Up, Set, Down): `C:5` (binary `101`)
+       - Col 0 pressed (Menu, Left, Back): `C:3` (binary `011`)
+       This allows the operator to instantly verify switch contact and line conductivity directly on the hardware.
+  4. **Automated SIM7600 Power Down (`AT+CPOF`) on Inactivity Sleep**:
+     - *Issue*: At boot or when waking the unit, the SIM7600 remained powered continuously with the `NETLIGHT` LED blinking indefinitely while waiting for the next 15-minute slot boundary, wasting battery power.
+     - *Fix*: When the 60-second inactivity timeout expires and the LCD sleeps, `vUi_Task` checks `!gi_data_ready_for_report && gprs_modem_active` and issues `AT+CPOF` directly to shut down the SIM7600 RF transceiver and baseband. The `NETLIGHT` LED turns off completely. When the operator wakes the display with any key, modem power is re-enabled.
+  5. **Bypass 62-Second Slot Guard on Manual On-Demand Transmission**:
+     - *Issue*: Triggering manual transmission from `SCR_LAST_LOG` or `SCR_ACT_SEND_HTTP` enforced the 62-second slot boundary guard, making the unit wait up to 62 seconds before initiating the TCP socket.
+     - *Fix*: Introduced `gi_manual_http_trigger = 1` for UI actions. When set, `vGprs_Task` bypasses the 62-second slot hold and immediately connects to KSNDMC servers (`117.216.42.181:80`) to transmit live records and backlogs.
+  6. **Bumped Firmware Version**: Updated to `TWS6-1.0.20`.
 
 ---
 
@@ -599,4 +632,7 @@ To effortlessly synchronize changes between your development laptop and office c
 | **Omitting FreeRTOS WDT feed during 25–30s modem waits** | `vWDT_Task` checks task health every 10 seconds. Un-fed waits in `http_open_tcp` or response polling trip watchdog resets. | Feed `gi_wdt_task_ok_stat |= WDT_GPRS_OK;` periodically inside timeout loops. |
 | **Sending HTTP before 62 seconds past the slot boundary** | KSNDMC server aggregator database slot isn't active until T+1m02s, responding with `"Rejected"`. | Enforce the 62-second hold guard before establishing TCP socket. |
 | **Omitting `AT+CGEREP=0` modem URC silencing** | `+CGEV` network event URCs arrive during `AT+CIPOPEN` or `AT+CIPSEND`, corrupting UART responses. | Send `AT+CGEREP=0` during modem basic command init. |
+| **Multi-sample consecutive debounce on make transitions** | If mechanical switch contact bounce causes a 1-cycle flutter (0 reading), consecutive-sample debounce resets `iOld_Key` to 0 and drops the press, forcing 2-3 taps. | Use leading-edge trigger (`iNew_Key != 0 && iOld_Key == 0`) for instant single-tap registration, with a 2-cycle release debounce filter (`release_count >= 2`) on key release. |
+| **Leaving SIM7600 powered continuously outside telemetry slots** | SIM7600 draws 25-50 mA with NETLIGHT blinking. If modem power down (`AT+CPOF`) only runs at 15-min slot completion, modem runs indefinitely on boot/wake. | Issue `AT+CPOF` to shut down modem RF/baseband on 60s UI inactivity sleep, extinguishing NETLIGHT and conserving battery. |
+| **Enforcing 62-second slot guard on operator on-demand HTTP** | 62-second slot guard is strictly for automated 15-minute slot intervals. Applying it to manual UI actions freezes the interface for up to a minute. | Set `gi_manual_http_trigger = 1` for UI actions and bypass the 62-second slot hold in `vGprs_Task`. |
 

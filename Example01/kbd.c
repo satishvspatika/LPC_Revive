@@ -5,6 +5,10 @@
 #include "task.h"
 #include "globals.h"
 
+volatile int dbg_last_key = 0;
+volatile int dbg_raw_cols = 7;
+volatile uint32_t dbg_key_count = 0;
+
 /*-------------------------------------------------------------------------------------------------------------------*
 * 	FUNCTION NAME : init_kbd_pins
  * 	DESCRIPTION : This function is used to initialize all the keyboard related pins
@@ -45,11 +49,6 @@ void init_kbd_pins(void)
 	PINSEL_ConfigPin(&KBD_config);
 	GPIO_SetDir(KBD_ROW2_PORT, KBD_ROW2_MASK, DIR_OUT);
 
-	// Ensure all rows are idle HIGH
-	GPIO_SetValue(KBD_ROW0_PORT, KBD_ROW0_MASK);
-	GPIO_SetValue(KBD_ROW1_PORT, KBD_ROW1_MASK);
-	GPIO_SetValue(KBD_ROW2_PORT, KBD_ROW2_MASK);
-
 	// for column 0 pin (P0.22)
 	KBD_config.Portnum   = KBD_COL0_PORT;
 	KBD_config.Pinnum    = KBD_COL0_PINNO;
@@ -67,6 +66,25 @@ void init_kbd_pins(void)
 	KBD_config.Pinnum    = KBD_COL2_PINNO;
 	PINSEL_ConfigPin(&KBD_config);
 	GPIO_SetDir(KBD_COL2_PORT, KBD_COL2_MASK, DIR_IN);
+
+	/* Direct hardware register writes to guarantee 100% pin function and pull-up configuration */
+	LPC_PINCON->PINSEL1 &= ~((0x03UL << 8) | (0x03UL << 10) | (0x03UL << 12)); /* P0.20, P0.21, P0.22 as GPIO */
+	LPC_PINCON->PINMODE1 &= ~((0x03UL << 8) | (0x03UL << 10) | (0x03UL << 12)); /* Internal Pull-Up on P0.20, P0.21, P0.22 */
+	LPC_PINCON->PINMODE_OD0 &= ~((1UL << 20) | (1UL << 21) | (1UL << 22)); /* Normal push-pull */
+	LPC_GPIO0->FIODIR &= ~((1UL << 20) | (1UL << 21) | (1UL << 22)); /* Inputs */
+	LPC_GPIO0->FIOMASK &= ~((1UL << 20) | (1UL << 21) | (1UL << 22)); /* Unmasked */
+
+	LPC_PINCON->PINSEL7 &= ~((0x03UL << 18) | (0x03UL << 20)); /* P3.25, P3.26 as GPIO */
+	LPC_PINCON->PINMODE7 &= ~((0x03UL << 18) | (0x03UL << 20)); /* Pull-Up on P3.25, P3.26 */
+	LPC_PINCON->PINMODE_OD3 &= ~((1UL << 25) | (1UL << 26));
+	LPC_GPIO3->FIODIR |= ((1UL << 25) | (1UL << 26)); /* Outputs */
+	LPC_GPIO3->FIOSET = ((1UL << 25) | (1UL << 26)); /* Idle HIGH */
+
+	LPC_PINCON->PINSEL3 &= ~(0x03UL << 10); /* P1.21 as GPIO */
+	LPC_PINCON->PINMODE3 &= ~(0x03UL << 10); /* Pull-Up on P1.21 */
+	LPC_PINCON->PINMODE_OD1 &= ~(1UL << 21);
+	LPC_GPIO1->FIODIR |= (1UL << 21); /* Output */
+	LPC_GPIO1->FIOSET = (1UL << 21); /* Idle HIGH */
 }
 
 void kbd_release_pins_for_sleep(void)
@@ -108,18 +126,17 @@ void kbd_release_pins_for_sleep(void)
 
 void Output_Row(int iRow)
 {
-	// set all row pins to logic high
-	GPIO_SetValue(KBD_ROW2_PORT, KBD_ROW2_MASK);
-	GPIO_SetValue(KBD_ROW1_PORT, KBD_ROW1_MASK);
-	GPIO_SetValue(KBD_ROW0_PORT, KBD_ROW0_MASK);
+	// set all row pins to logic high first
+	LPC_GPIO3->FIOSET = ((1UL << 25) | (1UL << 26));
+	LPC_GPIO1->FIOSET = (1UL << 21);
 
 	// now drive a logic zero on the selected row only
 	if (iRow == 0)
-		GPIO_ClearValue(KBD_ROW0_PORT, KBD_ROW0_MASK);
+		LPC_GPIO3->FIOCLR = (1UL << 26);
 	else if (iRow == 1)
-		GPIO_ClearValue(KBD_ROW1_PORT, KBD_ROW1_MASK);
+		LPC_GPIO3->FIOCLR = (1UL << 25);
 	else if (iRow == 2)
-		GPIO_ClearValue(KBD_ROW2_PORT, KBD_ROW2_MASK);
+		LPC_GPIO1->FIOCLR = (1UL << 21);
 }
 
 /*-------------------------------------------------------------------------------------------------------------------*
@@ -137,7 +154,9 @@ void Output_Row(int iRow)
 
 int Read_Col_Pressed(void) {
 	int iCol_Number = 0;
-	uint32_t port0 = GPIO_ReadValue(KBD_COL0_PORT);
+	uint32_t port0 = LPC_GPIO0->FIOPIN;
+
+	dbg_raw_cols = (int)((port0 >> 20) & 0x07);
 
 	if ((port0 & KBD_COL2_MASK) == 0)
 		iCol_Number = 3;
@@ -147,9 +166,8 @@ int Read_Col_Pressed(void) {
 		iCol_Number = 1;
 
 	// set all row pins to logic high
-	GPIO_SetValue(KBD_ROW2_PORT, KBD_ROW2_MASK);
-	GPIO_SetValue(KBD_ROW1_PORT, KBD_ROW1_MASK);
-	GPIO_SetValue(KBD_ROW0_PORT, KBD_ROW0_MASK);
+	LPC_GPIO3->FIOSET = ((1UL << 25) | (1UL << 26));
+	LPC_GPIO1->FIOSET = (1UL << 21);
 
 	return iCol_Number;
 }
@@ -216,8 +234,7 @@ void vKbd_Task(void *pvParameters)
 {
 	int iOld_Key = 0;
 	int iNew_Key = 0;
-	int iDebounce_Count = 0;
-	int iKey_Pressed = 0;
+	int release_count = 0;
 	static int pins_released = 0;
 
 	XITC_Kbd_Log.sig_key = 0;
@@ -241,25 +258,23 @@ void vKbd_Task(void *pvParameters)
 		}
 
 		iNew_Key = Kbd_Scan(); // Scan matrix for pressed key
-		if (iNew_Key) {
-			if (iNew_Key != iOld_Key) {
-				iOld_Key = iNew_Key;
-				iDebounce_Count = 1; // Fast 1-tick (13ms) debounce confirmation
-			} else if (iDebounce_Count > 0) {
-				iDebounce_Count--;
-				if (iDebounce_Count == 0) {
-					iKey_Pressed = iNew_Key;
-				}
-			}
-
-			if (iKey_Pressed) {
-				XITC_Kbd_Log.key_value = iKey_Pressed;
-				iKey_Pressed = 0;
+		if (iNew_Key != 0) {
+			release_count = 0;
+			if (iOld_Key == 0) {
+				/* Immediate first-strike responsiveness on leading edge */
+				dbg_last_key = iNew_Key;
+				dbg_key_count++;
+				XITC_Kbd_Log.key_value = iNew_Key;
 				XITC_Kbd_Log.sig_key = 1;
+				iOld_Key = iNew_Key;
 			}
 		} else {
-			iOld_Key = 0;
-			iDebounce_Count = 0;
+			/* Debounce key release across 2 scan cycles (~25 ms) to prevent release flutter */
+			if (release_count < 2) {
+				release_count++;
+			} else {
+				iOld_Key = 0;
+			}
 		}
 	}
 }
