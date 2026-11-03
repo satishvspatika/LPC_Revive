@@ -347,6 +347,16 @@ To effortlessly synchronize changes between your development laptop and office c
   5. Streamed exactly `rawLen` bytes of HTTP request over UART upon detecting `>` prompt.
   6. Updated firmware version strings in `Example01/memory.c` (`gc_version` and `new_version`) to `"TWS6-1.0.8"`.
 
+### 19. Telemetry Diagnostic Logging & Firmware Version Display (`v1.0.9`)
+- **Problem**:
+  1. Field logs in `httplog.txt` did not identify the running firmware version, making it impossible to verify whether a newly flashed binary or an older binary in flash was executing during field runs.
+  2. If the `>` prompt scanner timed out, the log only reported `HTTP: No > prompt received from modem!` without capturing what the modem actually returned on UART.
+- **Fix**:
+  1. Added `Firmware: %s` (`Global_Data_Params.gc_version`) to the `sd_log_http` start banner in `Example01/gprs.c`, so every 15-minute transmission slot explicitly logs the executing firmware version.
+  2. Added capture buffer `prompt_rx[64]` to log the raw modem reply if prompt search fails (`HTTP: No > prompt received from modem! (rx: [%s])`).
+  3. Added explicit confirmation log `HTTP: > prompt OK, streaming payload...` once `>` is detected.
+  4. Bumped firmware version strings to `TWS6-1.0.9`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)

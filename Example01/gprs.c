@@ -1932,12 +1932,17 @@ int http_send_data_single(char *server, int port, char *path) {
 	vTaskDelay(20 / portTICK_RATE_MS);
 
 	/* 5. Search circular buffer for '>' prompt (avoids false-exit on \r\n or echo) */
+	char prompt_rx[64] = {0};
+	int rx_idx = 0;
 	int prompt_found = 0;
 	timeout = 5000 / 10;
 	while (timeout > 0 && !prompt_found) {
 		while (gprs_recv_in_cnt != gprs_recv_out_cnt) {
 			char ch = *((char *)(0x2007c000 + gprs_recv_out_cnt));
 			gprs_recv_out_cnt = (gprs_recv_out_cnt + 1) % RECVBUF_SIZE;
+			if (rx_idx < sizeof(prompt_rx) - 1 && ch >= 32 && ch <= 126) {
+				prompt_rx[rx_idx++] = ch;
+			}
 			if (ch == '>') {
 				prompt_found = 1;
 				break;
@@ -1950,10 +1955,12 @@ int http_send_data_single(char *server, int port, char *path) {
 	}
 
 	if (!prompt_found) {
-		sd_log_http("HTTP: No > prompt received from modem!");
+		sprintf(log_tmp, "HTTP: No > prompt received from modem! (rx: [%s])", prompt_rx);
+		sd_log_http(log_tmp);
 		Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1500);
 		return eXfer_Fail;
 	}
+	sd_log_http("HTTP: > prompt OK, streaming payload...");
 	vTaskDelay(10 / portTICK_RATE_MS);
 
 	/* 6. Send raw HTTP request payload (exact rawLen bytes, strictly NO Ctrl-Z / 0x1A) */
@@ -2993,8 +3000,9 @@ void vGprs_Task( void *pvParameters){
 
 			sd_log_http("========================================");
 			sd_log_http("=== HTTP TELEMETRY TRANSMISSION START ===");
-			sprintf(log_tmp, "Station ID: %s, Operator: %s, Signal: %d dBm, Reg: %d",
+			sprintf(log_tmp, "Station ID: %s, Firmware: %s, Operator: %s, Signal: %d dBm, Reg: %d",
 				Global_Data_Params.gc_station_id,
+				Global_Data_Params.gc_version,
 				gc_operator_name,
 				gi_signal_level, gi_sim_reg);
 			sd_log_http(log_tmp);
