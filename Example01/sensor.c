@@ -1,5 +1,8 @@
+#include <stdio.h>
+#include <string.h>
 #include "sensor.h"
 #include "globals.h"
+#include "ui.h"
 #include "lpc17xx_uart.h"
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_libcfg_default.h"

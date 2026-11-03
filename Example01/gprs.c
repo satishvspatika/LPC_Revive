@@ -1881,20 +1881,57 @@ int http_send_data_single(char *server, int port, char *path) {
 	char gprs_new_mon[4], gprs_new_day[5];
 	int gprs_month_no;
 
+	/* 1. Format HTTP request upfront so exact byte length is known for AT+CIPSEND */
+	if (path != NULL && path[0] == '/') {
+		strncpy(formatted_path, path, sizeof(formatted_path) - 1);
+	} else if (path != NULL) {
+		snprintf(formatted_path, sizeof(formatted_path), "/%s", path);
+	} else {
+		strcpy(formatted_path, "/");
+	}
+	formatted_path[sizeof(formatted_path) - 1] = 0;
+
+	int offset = snprintf(http_data, 1024, "POST %s HTTP/1.1\r\n", formatted_path);
+	if (port == 80) {
+		offset += snprintf(http_data + offset, 1024 - offset, "Host: %s\r\n", 
+			(strcmp(server, "117.216.42.181") == 0 || strcmp(server, "144.91.104.105") == 0) ? 
+			Global_Data_Params.gc_http_server_name1 : server);
+	} else {
+		offset += snprintf(http_data + offset, 1024 - offset, "Host: %s:%d\r\n", 
+			(strcmp(server, "117.216.42.181") == 0 || strcmp(server, "144.91.104.105") == 0) ? 
+			Global_Data_Params.gc_http_server_name1 : server, port);
+	}
+	offset += snprintf(http_data + offset, 1024 - offset, "Connection: close\r\n");
+#if (UNIT_CFG == CFG_BIHAR_TRG)
+	offset += snprintf(http_data + offset, 1024 - offset, "Content-Type: application/json\r\n");
+#else
+	offset += snprintf(http_data + offset, 1024 - offset, "Content-Type: application/x-www-form-urlencoded\r\n");
+#endif
+	offset += snprintf(http_data + offset, 1024 - offset, "Content-Length: %d\r\n\r\n", (int)strlen(gc_http_data));
+	offset += snprintf(http_data + offset, 1024 - offset, "%s", gc_http_data);
+
+	int rawLen = strlen(http_data);
+
+	sprintf(log_tmp, "HTTP: POST %s (Total: %d, Body: %d)", formatted_path, rawLen, (int)strlen(gc_http_data));
+	sd_log_http(log_tmp);
+	sd_log_http("HTTP: Payload ->");
+	sd_log_http(gc_http_data);
+
+	/* 2. Open TCP connection to target server */
 	if (http_open_tcp(server, port) != 1) {
 		return eXfer_Fail;
 	}
 
-	// Flush any pending incoming bytes in circular buffer before sending command
+	/* 3. Flush any pending incoming bytes in circular buffer before sending command */
 	gprs_recv_out_cnt = gprs_recv_in_cnt;
 
-	// SIM7600 variable-length CIPSEND command: AT+CIPSEND=0 (strictly NO trailing comma)
-	sprintf(gprs_xmit_buf,"AT+CIPSEND=0\r\n");
+	/* 4. SIM7600 Direct Socket CIPSEND requires exact byte length: AT+CIPSEND=0,<rawLen> */
+	sprintf(gprs_xmit_buf, "AT+CIPSEND=0,%d\r\n", rawLen);
 	gprs_xmit_ptr = gprs_xmit_buf;
 	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
 	vTaskDelay(20 / portTICK_RATE_MS);
 
-	// Explicitly search circular buffer for '>' prompt (avoids false-exit on \r\n or echo)
+	/* 5. Search circular buffer for '>' prompt (avoids false-exit on \r\n or echo) */
 	int prompt_found = 0;
 	timeout = 5000 / 10;
 	while (timeout > 0 && !prompt_found) {
@@ -1919,48 +1956,14 @@ int http_send_data_single(char *server, int port, char *path) {
 	}
 	vTaskDelay(10 / portTICK_RATE_MS);
 
-	/* Ensure path starts with leading slash for RFC compliant HTTP/1.1 */
-	if (path != NULL && path[0] == '/') {
-		strncpy(formatted_path, path, sizeof(formatted_path) - 1);
-	} else if (path != NULL) {
-		snprintf(formatted_path, sizeof(formatted_path), "/%s", path);
-	} else {
-		strcpy(formatted_path, "/");
-	}
-	formatted_path[sizeof(formatted_path) - 1] = 0;
-
-	sprintf(http_data, "POST %s HTTP/1.1\r\n", formatted_path);
-	if (port == 80) {
-		sprintf(http_data, "%sHost: %s\r\n", http_data, 
-			(strcmp(server, "117.216.42.181") == 0 || strcmp(server, "144.91.104.105") == 0) ? 
-			Global_Data_Params.gc_http_server_name1 : server);
-	} else {
-		sprintf(http_data, "%sHost: %s:%d\r\n", http_data, 
-			(strcmp(server, "117.216.42.181") == 0 || strcmp(server, "144.91.104.105") == 0) ? 
-			Global_Data_Params.gc_http_server_name1 : server, port);
-	}
-	strcat(http_data, "Connection: close\r\n");
-#if (UNIT_CFG == CFG_BIHAR_TRG)
-	strcat(http_data, "Content-Type: application/json\r\n");
-#else
-	strcat(http_data, "Content-Type: application/x-www-form-urlencoded\r\n");
-#endif
-	sprintf(http_data, "%sContent-Length: %d\r\n\r\n", http_data, strlen(gc_http_data));
-	strcat(http_data, gc_http_data);
-	strcat(http_data, "\032");
-
-	sprintf(log_tmp, "HTTP: POST %s (Len: %d)", formatted_path, strlen(gc_http_data));
-	sd_log_http(log_tmp);
-	sd_log_http("HTTP: Payload ->");
-	sd_log_http(gc_http_data);
-
-	for(i=0; i<sizeof(http_response); i++)
-		http_response[i]=0;
+	/* 6. Send raw HTTP request payload (exact rawLen bytes, strictly NO Ctrl-Z / 0x1A) */
+	for (i = 0; i < sizeof(http_response); i++)
+		http_response[i] = 0;
 	gprs_xmit_ptr = http_data;
 	UART_SendData((LPC_UART_TypeDef*) GPRS_UART, *gprs_xmit_ptr++);
 
-	/* Wait until UART ISR finishes transmitting entire payload including 0x1A */
-	int tx_wait = 200;
+	/* Wait until UART ISR finishes transmitting entire payload */
+	int tx_wait = 400;
 	while (*gprs_xmit_ptr && tx_wait > 0) {
 		vTaskDelay(5 / portTICK_RATE_MS);
 		tx_wait--;

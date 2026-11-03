@@ -332,6 +332,21 @@ To effortlessly synchronize changes between your development laptop and office c
   5. Total RAM freed from `RamLoc32`: 2,194 bytes, eliminating the 1124-byte overflow and providing **1,070 bytes of clean free headroom** in `RamLoc32`.
   6. Added all missing header includes and declarations (`<stdio.h>`, `"lpc17xx_gpio.h"`, `<string.h>`, `"ff.h"`, `mark_http_sample_sent_in_flash()`), fixed `sim_holder[8]` buffer overflow in `get_gps_info()`, and fixed `mv2endof_str()` pointer return (`s = 0`). All source files now compile with zero errors and zero warnings.
 
+
+### 18. SIM7600 Direct Socket `AT+CIPSEND` Byte Length & Payload Framing (`v1.0.8`)
+- **Problem**:
+  1. In field tests with `v1.0.7`, the modem successfully opened the network bearer (`NETOPEN OK`), obtained IP `172.19.147.122`, and connected TCP to KSNDMC direct IP (`117.216.42.181:80` `+CIPOPEN: 0,0 OK`).
+  2. However, transmission immediately aborted with `HTTP: No > prompt received from modem!`.
+  3. Analysis of SIM7600 AT Command Specification revealed that SIM7600 direct socket data mode (`AT+CIPMODE=0`) strictly requires an explicit length argument: `AT+CIPSEND=<link_num>,<length>\r\n`. Issuing `AT+CIPSEND=0` without length causes SIM7600 to reject the command with `ERROR` instead of returning the `>` prompt.
+  4. Additionally, legacy 2G firmware appended `\032` (Ctrl+Z, 0x1A) to terminate transmission. In fixed-length direct socket mode, appending `\032` adds an extraneous invalid character to the HTTP payload and corrupts socket framing.
+- **Fix**:
+  1. Refactored `http_send_data_single()` in `Example01/gprs.c`: formatted the entire HTTP request headers and payload into AHB SRAM Bank 1 (`0x20080000`) upfront using safe `snprintf` bounds checking.
+  2. Calculated total transmission byte length `rawLen = strlen(http_data)`.
+  3. Eliminated the trailing `\032` (0x1A) Ctrl+Z termination.
+  4. Issued `AT+CIPSEND=0,<rawLen>\r\n`. With the length parameter specified, SIM7600 immediately issues the `>` prompt (< 5 ms).
+  5. Streamed exactly `rawLen` bytes of HTTP request over UART upon detecting `>` prompt.
+  6. Updated firmware version strings in `Example01/memory.c` (`gc_version` and `new_version`) to `"TWS6-1.0.8"`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
@@ -349,7 +364,8 @@ To effortlessly synchronize changes between your development laptop and office c
 | **Sending `AT+CNMP=13` (GSM only) during registration** | Kills Airtel 4G LTE registration; SIM7600 stays locked in 2G mode permanently across reboots. | Always use `AT+CNMP=2` (Auto RAT selection) and check `CREG`, `CGREG`, and `CEREG`. |
 | **Omitting `time_since_reset_interval = 0` on 15-min wake** | LPC845 watchdog timer accumulates 14 minutes during sleep, resetting the system after only 3–4 minutes. | Reset `time_since_reset_interval = 0;` at `minute % 15 == 0` when power rails are switched on. |
 | **Passing `"OK"` as `nack` parameter in `AT+NETOPEN`** | `AT+NETOPEN` responds `OK` immediately before sending `+NETOPEN: 0`. Passing `"OK"` as `nack` falsely triggers error handling. | Pass `nack = "ERROR"` and check for `+NETOPEN: 0` or `"already opened"`. |
-| **Formatting `AT+CIPSEND=0,\r\n` with trailing comma** | SIM7600 returns `ERROR` on trailing comma syntax when no length parameter is provided. | Use `AT+CIPSEND=0\r\n` without trailing comma. |
+| **Sending `AT+CIPSEND=0` without length or with trailing comma** | SIM7600 returns `ERROR` on `AT+CIPSEND=0` or `AT+CIPSEND=0,`. SIM7600 direct socket mode strictly requires the payload byte count. | Always format HTTP headers and body first, compute `rawLen = strlen(http_data)`, and issue `AT+CIPSEND=0,<rawLen>\r\n`. |
+| **Appending `\032` (Ctrl+Z / 0x1A) in direct socket mode** | In fixed-length direct socket mode (`AT+CIPSEND=0,<len>`), Ctrl+Z is NOT a packet terminator; it gets sent as a literal byte corrupting the stream. | Send exactly `rawLen` bytes without `\032`. |
 | **Hardcoding non-existent fallback IPs (`144.91.104.105:80`) for KSNDMC** | Hangs HTTP transmission for 25 seconds on Airtel IoT private APNs. | Use KSNDMC primary domain name first, then fallback to `117.216.42.181:80`. |
 | **Not resetting `dest_in_count` between response lines** | Multi-line HTTP headers exceed 300 bytes, wrapping around in `http_response` and corrupting `Date:`, `200 OK`, or `Success` matches. | Reset `dest_in_count = 0; http_response[0] = 0;` inside `if (lf_recd)` after each line. |
 | **Omitting FreeRTOS WDT feed during 25–30s modem waits** | `vWDT_Task` checks task health every 10 seconds. Un-fed waits in `http_open_tcp` or response polling trip watchdog resets. | Feed `gi_wdt_task_ok_stat |= WDT_GPRS_OK;` periodically inside timeout loops. |

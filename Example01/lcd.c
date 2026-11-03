@@ -1,7 +1,9 @@
 #include "lcd.h"
 #include "ui.h"
 #include "FreeRTOS.h"
+#include "task.h"
 #include "lpc17xx_pinsel.h"
+#include "lpc17xx_gpio.h"
 #include "globals.h"
 
 /*-------------------------------------------------------------------------------------------------------------------*
