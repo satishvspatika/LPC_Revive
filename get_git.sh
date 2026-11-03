@@ -139,20 +139,13 @@ if [ -n "$TAG_NAME" ]; then
     echo -e "  ${BOLD}git checkout main && ./get_git.sh${NC}\n"
 
 else
-    # Default mode: Pull latest changes on current branch
+    # Default mode: Retrieve latest commit on main/current branch
     CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
 
     if [ "$CURRENT_BRANCH" = "HEAD" ]; then
-        echo -e "\n${YELLOW}2. Repository is currently at a detached tag/commit.${NC}"
-        echo -n "Do you want to switch back to the 'main' branch and pull latest? [Y/n]: "
-        read -r SWITCH_MAIN
-        if [[ ! "$SWITCH_MAIN" =~ ^[Nn]$ ]]; then
-            git checkout main
-            CURRENT_BRANCH="main"
-        else
-            echo -e "${YELLOW}Staying at detached HEAD. Fetched all tags.${NC}"
-            exit 0
-        fi
+        echo -e "\n${YELLOW}2. Switching back from detached tag to 'main' branch...${NC}"
+        git checkout main
+        CURRENT_BRANCH="main"
     fi
 
     echo -e "\n${YELLOW}2. Pulling latest commits on branch '${CURRENT_BRANCH}'...${NC}"
@@ -171,3 +164,4 @@ else
         echo -e "Use ${BOLD}./get_git.sh -tag \"<tag>\"${NC} to checkout any specific tag.\n"
     fi
 fi
+

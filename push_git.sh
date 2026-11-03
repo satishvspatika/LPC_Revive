@@ -169,3 +169,4 @@ echo -e "  Tag:     ${TAG_NAME}"
 echo -e "${GREEN}======================================================${NC}"
 echo -e "To retrieve this exact version on your other laptop/system, run:"
 echo -e "  ${BOLD}./get_git.sh -tag \"${TAG_NAME}\"${NC}\n"
+
