@@ -511,7 +511,7 @@ void vSensor_Task(void *pvParameters)
 
 
 		// shutdown power takes highest priority
-		if((shutdown_pwr == 1)&& (!gUi_Active)){
+		if(shutdown_pwr == 1){
 			sensor_send_cmd_direct("$f7;\012");
 			vTaskDelay(500 / portTICK_RATE_MS);
 			usb_lcd_pwr = 'u';

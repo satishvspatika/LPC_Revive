@@ -1100,11 +1100,9 @@ void vUi_Task(void *pvParameters)
 
 			inactivity_seconds += secs_to_advance;
 			if (inactivity_seconds >= 60 && gUi_Active) {
-				/* Turn off LCD display to conserve power on inactivity; does not cut MCU power */
-				gUi_Active = 0;
-				if (lcd_active) {
-					toggle_display();
-				}
+				/* Operator inactivity timeout: enter deep sleep to cut power rails */
+				inactivity_seconds = 0;
+				system_enter_sleep();
 			}
 
 			if (xPresent_Date_Time.year < 100 && xPresent_Date_Time.year > 0) {

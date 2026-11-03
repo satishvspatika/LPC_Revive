@@ -3247,150 +3247,147 @@ void vGprs_Task( void *pvParameters){
 
 			/////////////////DOTA
 
-			//////////Check FTP for present day
-			if(http_status == 1)
-				ftp_rec_no = present_sample_no - 1;
-			else
-				ftp_rec_no = present_sample_no;
+			if (http_status == 1) {
+				update_present_day_flag = 1;
+			} else {
+				//////////Check FTP for present day as fallback when HTTP fails
+				if(http_status == 1)
+					ftp_rec_no = present_sample_no - 1;
+				else
+					ftp_rec_no = present_sample_no;
 
-			if((sampleNo % 5) != 0) {
-				while(ftp_rec_no >= 0){
-					if((days_sector[present_sector_no-2]->samples[ftp_rec_no].http_status != 1) && (days_sector[present_sector_no-2]->samples[ftp_rec_no].ftp_status != 1) && ((days_sector[present_sector_no-2]->samples[ftp_rec_no].rf != 0xFFFF))){
+				if((sampleNo % 5) != 0) {
+					while(ftp_rec_no >= 0){
+						if((days_sector[present_sector_no-2]->samples[ftp_rec_no].http_status != 1) && (days_sector[present_sector_no-2]->samples[ftp_rec_no].ftp_status != 1) && ((days_sector[present_sector_no-2]->samples[ftp_rec_no].rf != 0xFFFF))){
 
-						//			cumulative_rf1(days_sector[present_sector_no-2]->date, days_sector[present_sector_no-2]->month, days_sector[present_sector_no-2]->year,
-						//					days_sector[present_sector_no-2]->samples[ftp_rec_no].hour, days_sector[present_sector_no-2]->samples[ftp_rec_no].minute);
+							f_bat_volt1 = ((((float)(days_sector[present_sector_no-2]->samples[ftp_rec_no].battery1) * 3.3/4095)/0.128));
+							f_bat_volt2 = ((((float)(days_sector[present_sector_no-2]->samples[ftp_rec_no].battery2) * 3.3/4095)/0.128));
 
-						//			vTaskDelay(1 / portTICK_RATE_MS);
+							f_temp = ((float)days_sector[present_sector_no-2]->samples[ftp_rec_no].temperature/65536) * 165 - 40;
+							f_humid = ((float)days_sector[present_sector_no-2]->samples[ftp_rec_no].humidity/65534) * 100;
+							f_wd = ((int)(days_sector[present_sector_no-2]->samples[ftp_rec_no].wind_direction * 0.088)) % 360;
 
-						//			ftp_rf = c_rainfall;
-						f_bat_volt1 = ((((float)(days_sector[present_sector_no-2]->samples[ftp_rec_no].battery1) * 3.3/4095)/0.128));
-						f_bat_volt2 = ((((float)(days_sector[present_sector_no-2]->samples[ftp_rec_no].battery2) * 3.3/4095)/0.128));
+							if (days_sector[present_sector_no-2]->samples[ftp_rec_no].ws_sec_cnt > 0) {
+								f_ws = ((float)(days_sector[present_sector_no-2]->samples[ftp_rec_no].wind_speed / 4)) / days_sector[present_sector_no-2]->samples[ftp_rec_no].ws_sec_cnt;
+							} else {
+								f_ws = 0.0f;
+							}
 
-						f_temp = ((float)days_sector[present_sector_no-2]->samples[ftp_rec_no].temperature/65536) * 165 - 40;
+							f_ws = (f_ws * ws_calib_factor ) + ws_offset;
+							f_wd = ((int)f_wd * wd_calib_factor) + wd_offset;
+							f_temp = (f_temp * temp_calib_factor) + temp_offset;
+							f_humid = (f_humid * humid_calib_factor) + humid_offset;
 
+							if((f_temp < 2) || (f_temp > 60)) f_temp = 0;
+							if(f_humid < 6) f_humid = 0;
+							if(f_humid > 100) f_humid = 100;
+							if(f_ws < 0) f_ws = 0;
 
+							char temp_str[8];
+							int t_val = (int)(f_temp * 10);
+							if (t_val < 0) {
+								int pos_t = -t_val;
+								snprintf(temp_str, sizeof(temp_str), "-%02d.%1d", pos_t / 10, pos_t % 10);
+							} else {
+								snprintf(temp_str, sizeof(temp_str), "%03d.%1d", t_val / 10, t_val % 10);
+							}
 
+							char clean_id[8];
+							if (strlen(Global_Data_Params.gc_station_id) == 4 && (Global_Data_Params.gc_station_id[0] >= '0' && Global_Data_Params.gc_station_id[0] <= '9')) {
+								snprintf(clean_id, sizeof(clean_id), "00%s", Global_Data_Params.gc_station_id);
+							} else {
+								snprintf(clean_id, sizeof(clean_id), "%06s", Global_Data_Params.gc_station_id);
+							}
 
-						f_humid = ((float)days_sector[present_sector_no-2]->samples[ftp_rec_no].humidity/65534) * 100;
+							int h_val = (int)(f_humid * 10);
+							int w_val = (int)(f_ws * 10);
+							int b_val = (int)(f_bat_volt1 * 100);
 
-						f_wd = ((int)(days_sector[present_sector_no-2]->samples[ftp_rec_no].wind_direction * 0.088)) % 360;		// 360/4095 = 0.088
+							snprintf(ftp_rec, sizeof(ftp_rec),
+									"%06s;%04d-%02d-%02d,%02d:%02d;%5s;%03d.%1d;%02d.%1d;%03d;%04d;%02d.%02d\r\n",
+									clean_id,
+									days_sector[present_sector_no-2]->samples[ftp_rec_no].year,
+									days_sector[present_sector_no-2]->samples[ftp_rec_no].month,
+									days_sector[present_sector_no-2]->samples[ftp_rec_no].date,
+									days_sector[present_sector_no-2]->samples[ftp_rec_no].hour,
+									days_sector[present_sector_no-2]->samples[ftp_rec_no].minute,
+									temp_str,
+									h_val / 10, h_val % 10,
+									w_val / 10, w_val % 10,
+									f_wd,
+									days_sector[present_sector_no-2]->samples[ftp_rec_no].signal,
+									b_val / 100, b_val % 100);
 
-						if (days_sector[present_sector_no-2]->samples[ftp_rec_no].ws_sec_cnt > 0) {
-							f_ws = ((float)(days_sector[present_sector_no-2]->samples[ftp_rec_no].wind_speed / 4)) / days_sector[present_sector_no-2]->samples[ftp_rec_no].ws_sec_cnt;
-						} else {
-							f_ws = 0.0f;
+							if (strlen(ftp_rec) == 57) {
+								strcat(ftp_buff, ftp_rec);
+								ftp_flag[ftp_line_cnt] = ftp_rec_no;
+								ftp_line_cnt++;
+							}
 						}
 
-						f_ws = (f_ws * ws_calib_factor ) + ws_offset;
-						f_wd = ((int)f_wd * wd_calib_factor) + wd_offset;
-						f_temp = (f_temp * temp_calib_factor) + temp_offset;
-						f_humid = (f_humid * humid_calib_factor) + humid_offset;
-
-						if((f_temp < 2) || (f_temp > 60)){
-							f_temp = 0;
-						}
-
-						if(f_humid < 6){
-							f_humid = 0;
-						}
-
-						if(f_humid > 100)
-							f_humid = 100;
-
-						if(f_ws < 0)
-							f_ws = 0;
-
-
-						char temp_str[8];
-						int t_val = (int)(f_temp * 10);
-						if (t_val < 0) {
-							int pos_t = -t_val;
-							snprintf(temp_str, sizeof(temp_str), "-%02d.%1d", pos_t / 10, pos_t % 10);
-						} else {
-							snprintf(temp_str, sizeof(temp_str), "%03d.%1d", t_val / 10, t_val % 10);
-						}
-
-						char clean_id[8];
-						if (strlen(Global_Data_Params.gc_station_id) == 4 && (Global_Data_Params.gc_station_id[0] >= '0' && Global_Data_Params.gc_station_id[0] <= '9')) {
-							snprintf(clean_id, sizeof(clean_id), "00%s", Global_Data_Params.gc_station_id);
-						} else {
-							snprintf(clean_id, sizeof(clean_id), "%06s", Global_Data_Params.gc_station_id);
-						}
-
-						int h_val = (int)(f_humid * 10);
-						int w_val = (int)(f_ws * 10);
-						int b_val = (int)(f_bat_volt1 * 100);
-
-						// Strict 57-byte format: <STN_ID>;YYYY-MM-DD,HH:MM;<TEMP>;<HUMID>;<WS>;<WD>;<SIGNAL>;<BATTERY>\r\n
-						snprintf(ftp_rec, sizeof(ftp_rec),
-								"%06s;%04d-%02d-%02d,%02d:%02d;%5s;%03d.%1d;%02d.%1d;%03d;%04d;%02d.%02d\r\n",
-								clean_id,
-								days_sector[present_sector_no-2]->samples[ftp_rec_no].year,
-								days_sector[present_sector_no-2]->samples[ftp_rec_no].month,
-								days_sector[present_sector_no-2]->samples[ftp_rec_no].date,
-								days_sector[present_sector_no-2]->samples[ftp_rec_no].hour,
-								days_sector[present_sector_no-2]->samples[ftp_rec_no].minute,
-								temp_str,
-								h_val / 10, h_val % 10,
-								w_val / 10, w_val % 10,
-								f_wd,
-								days_sector[present_sector_no-2]->samples[ftp_rec_no].signal,
-								b_val / 100, b_val % 100);
-
-						if (strlen(ftp_rec) == 57) {
-							strcat(ftp_buff, ftp_rec);
-							ftp_flag[ftp_line_cnt] = ftp_rec_no;
-							ftp_line_cnt++;
-						}
-
+						ftp_rec_no--;
+						if((ftp_line_cnt > 16))
+							break;
 					}
-
-					ftp_rec_no--;
-					//	if((ftp_line_cnt > 20))
-					if((ftp_line_cnt > 16))
-						break;
 				}
 
-			}
-
-			if((ftp_line_cnt > 0) && (gi_sim_state == 1)){
-
-				if(gi_sim_reg == 1){
-					ftp_server_connected = connect_ftp1();
+				if((ftp_line_cnt > 0) && (gi_sim_state == 1)){
+					if(gi_sim_reg == 1){
+						ftp_server_connected = connect_ftp1();
+						vTaskDelay(200 / portTICK_RATE_MS);
+					}
+					if(ftp_server_connected == 1)
+						ftp_send_data();
 					vTaskDelay(200 / portTICK_RATE_MS);
 				}
 
-				//response_no == eNack;
+				if(ftp_status == 1){
+					gi_present_error = 0;
+					gi_log_date	  = xLast_Rec_15min_Date_Time.date;
+					gi_log_month  = xLast_Rec_15min_Date_Time.month;
+					gi_log_year	  = xLast_Rec_15min_Date_Time.year;
+					gi_log_hour	  = xLast_Rec_15min_Date_Time.hour;
+					gi_log_minute = xLast_Rec_15min_Date_Time.minute;
+					XITC_Gprs_Disk.command = eSave_Params;
+					XITC_Gprs_Disk.signal = 1;
+					while(XITC_Gprs_Disk.signal)
+						vTaskDelay(100 / portTICK_RATE_MS);
+				}
 
-				if(ftp_server_connected == 1)
-					ftp_send_data();
+				if(http_status == 0){
+					if((xLast_Rec_15min_Date_Time.hour == 8) && (xLast_Rec_15min_Date_Time.minute == 30)){
+						if(gi_disk_ok == 1){
+							sprintf(status_response,"%s,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+									gc_sms_data,
+									gi_log_year,
+									gi_log_month,
+									gi_log_date,
+									gi_log_hour,
+									gi_log_minute,
+									gi_present_error);
 
-				vTaskDelay(200 / portTICK_RATE_MS);
+							response_no = send_message(Global_Data_Params.gc_master_gsm, status_response);
+							vTaskDelay(100 / portTICK_RATE_MS);
+						}
 
-			}
+						if((gi_disk_ok != 1) || (response_no != 1)){
+							sprintf(status_response,"%s,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
+									gc_sms_data,
+									gi_log_year,
+									gi_log_month,
+									gi_log_date,
+									gi_log_hour,
+									gi_log_minute,
+									gi_present_error);
 
-			if(ftp_status == 1){
-				gi_present_error = 0;  // clear present error
-				gi_log_date	  = xLast_Rec_15min_Date_Time.date;
-				gi_log_month  = xLast_Rec_15min_Date_Time.month;
-				gi_log_year	  = xLast_Rec_15min_Date_Time.year;
-				gi_log_hour	  = xLast_Rec_15min_Date_Time.hour;
-				gi_log_minute = xLast_Rec_15min_Date_Time.minute;
-				// store last logged date time in params file
-				XITC_Gprs_Disk.command = eSave_Params;
-				XITC_Gprs_Disk.signal = 1;
-				while(XITC_Gprs_Disk.signal)
-					vTaskDelay(100 / portTICK_RATE_MS);
-			}
+							response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
+							vTaskDelay(100 / portTICK_RATE_MS);
+						}
+					}
+				}
 
-			//	http_status = 0;
-			//	ftp_status = 0;
-			//	Global_Data_Params.gi_send_data_sms = 1;
-
-			if(http_status == 0){
-				if((xLast_Rec_15min_Date_Time.hour == 8) && (xLast_Rec_15min_Date_Time.minute == 30)){
-
-					if(gi_disk_ok == 1){
+				if((http_status == 0) && (ftp_status == 0)){
+					if(Global_Data_Params.gi_send_data_sms == 1){
 						sprintf(status_response,"%s,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
 								gc_sms_data,
 								gi_log_year,
@@ -3403,209 +3400,26 @@ void vGprs_Task( void *pvParameters){
 						response_no = send_message(Global_Data_Params.gc_master_gsm, status_response);
 						vTaskDelay(100 / portTICK_RATE_MS);
 					}
+				}
 
-					if((gi_disk_ok != 1) || (response_no != 1)){
-
-						sprintf(status_response,"%s,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
-								gc_sms_data,
-								gi_log_year,
-								gi_log_month,
-								gi_log_date,
-								gi_log_hour,
-								gi_log_minute,
-								gi_present_error);
-
-						response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
-						vTaskDelay(100 / portTICK_RATE_MS);
-					}
+				if(ftp_status == 1){
+					update_present_day_flag = 1;
+				} else {
+					if((xLast_Rec_15min_Date_Time.hour == 8) && (xLast_Rec_15min_Date_Time.minute == 30))
+						store_ftp_sdc = 1;
 				}
 			}
 
-			if((http_status == 0) && (ftp_status == 0)){
+			/* Gracefully close bearer & power down SIM7600 cellular engine to turn off NETLIGHT LED */
+			sd_log_http("NET: Telemetry session complete. Tearing down bearer...");
+			Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1000);
+			Send_And_Check_Gprs("AT+NETCLOSE\r\n", "+NETCLOSE: 0", "ERROR", 3000);
+			vTaskDelay(100 / portTICK_RATE_MS);
+			sd_log_http("NET: Shutting down SIM7600 cellular engine (AT+CPOF)...");
+			Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
+			sd_log_http("NET: Modem powered down. NETLIGHT LED off. Entering sleep.");
+			vTaskDelay(200 / portTICK_RATE_MS);
 
-				if(Global_Data_Params.gi_send_data_sms == 1){
-					sprintf(status_response,"%s,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
-							gc_sms_data,
-							gi_log_year,
-							gi_log_month,
-							gi_log_date,
-							gi_log_hour,
-							gi_log_minute,
-							gi_present_error);
-
-					response_no = send_message(Global_Data_Params.gc_master_gsm, status_response);
-					vTaskDelay(100 / portTICK_RATE_MS);
-				}
-
-				/*			if((xLast_Rec_15min_Date_Time.hour == 8) && (xLast_Rec_15min_Date_Time.minute == 30)){
-
-					auto_dump_date  = xLast_Rec_15min_Date_Time.date;
-					auto_dump_month = xLast_Rec_15min_Date_Time.month;
-					auto_dump_year	= xLast_Rec_15min_Date_Time.year;
-
-					XITC_Gprs_Disk.signal = 1;
-					XITC_Gprs_Disk.command = ePrepare_Auto_Dump;
-					while(XITC_Gprs_Disk.signal)
-						vTaskDelay(100 / portTICK_RATE_MS);
-					sprintf(dump_buf, "%s\032",dump_buf);
-					send_message(Global_Data_Params.gc_universal_gsm, dump_buf);
-				}*/
-				//	sleep_mode = 1;
-
-			}
-
-
-			if(firmware_updated == 1){
-				sprintf(status_response,"%s,%s,STATUS-C,%s,%04d-%02d-%02dT%02d:%02d,%s-%c,%d,%04d,%.2f,%.2f,%c,%s,%04d-%02d-%02dT%02d:%02d,%d\r\n\032",
-						Global_Data_Params.gc_network_name,
-						Global_Data_Params.gc_station_type,
-						Global_Data_Params.gc_station_id,
-						xPresent_Date_Time.year,
-						xPresent_Date_Time.month,
-						xPresent_Date_Time.date,
-						xPresent_Date_Time.hour,
-						xPresent_Date_Time.minute,
-						Global_Data_Params.gc_version,
-						lpc845_ver,
-						Global_Data_Params.gi_report_interval,
-						gi_signal_level,
-						gf_bat_volt1,
-						gf_bat_volt2,
-						solar_status,
-						(gi_disk_ok ? "SDC-OK" : "SDC-FAIL"),
-						gi_log_year,
-						gi_log_month,
-						gi_log_date,
-						gi_log_hour,
-						gi_log_minute,
-						gi_present_error
-				);
-				response_no = send_message(Global_Data_Params.gc_universal_gsm, status_response);
-				vTaskDelay(100 / portTICK_RATE_MS);
-				firmware_updated = 0;
-			}
-
-			if((http_status == 1) || (ftp_status == 1)){
-				update_present_day_flag = 1;
-			}
-			else{
-				if((xLast_Rec_15min_Date_Time.hour == 8) && (xLast_Rec_15min_Date_Time.minute == 30))
-					store_ftp_sdc = 1;
-			}
-
-
-			//////////////////////////////////
-			if((gi_disk_ok == 1) && (ftp_status == 0)){
-				//ftp_status = 0;
-				// read the line number from which FTP is to be done
-				XITC_Gprs_Disk.command = eGetLineNo;
-				XITC_Gprs_Disk.signal = 1;
-				while(XITC_Gprs_Disk.signal)
-					vTaskDelay(5 / portTICK_RATE_MS);
-				ftp_start_line_no = XITC_Gprs_Disk.line_no;
-
-				// open the local file
-				XITC_Gprs_Disk.command = eFile_Open;
-				sprintf(XITC_Gprs_Disk.filename, "ftpdata.txt");
-				XITC_Gprs_Disk.data[0] = 0;
-				XITC_Gprs_Disk.signal = 1;
-				while(XITC_Gprs_Disk.signal)
-					vTaskDelay(5 / portTICK_RATE_MS);
-
-				if(XITC_Gprs_Disk.result == eFile_Not_Found){
-					ftp_in_sdc = 0;
-				}
-
-
-
-				if(XITC_Gprs_Disk.result == eFile_Opened){
-
-					XITC_Gprs_Disk.line_no = ftp_start_line_no;
-					XITC_Gprs_Disk.command = eSkipLines;
-					XITC_Gprs_Disk.signal = 1;
-					while (XITC_Gprs_Disk.signal)
-						vTaskDelay(5 / portTICK_RATE_MS);
-
-					if(XITC_Gprs_Disk.result != eFile_End){
-
-						for(ftp_line_no=0;ftp_line_no<16;ftp_line_no++){
-							XITC_Gprs_Disk.command = eFile_Get_Line;
-							XITC_Gprs_Disk.data[0] = 0;
-							XITC_Gprs_Disk.result = eLine_Read_In_Progress;
-							XITC_Gprs_Disk.signal = 1;
-							while (XITC_Gprs_Disk.signal)
-								vTaskDelay(5 / portTICK_RATE_MS);
-
-							strcat(ftp_buff,XITC_Gprs_Disk.data);
-
-							if(XITC_Gprs_Disk.result==eFile_End)
-								break;
-						}
-					}
-
-					if((ftp_line_no > 0) && (gi_sim_state == 1)){
-
-						/*	if(gi_sim_reg == 1){
-							ftp_server_connected = connect_ftp1();
-							vTaskDelay(200 / portTICK_RATE_MS);
-						}*/
-
-						//response_no == eNack;
-						vTaskDelay(20 / portTICK_RATE_MS);
-
-						if(ftp_server_connected == 1){
-							ftp_send_data();
-							vTaskDelay(10 / portTICK_RATE_MS);
-
-						}
-						else{
-							if(gi_sim_reg == 1){
-								ftp_server_connected = connect_ftp1();
-								vTaskDelay(200 / portTICK_RATE_MS);
-							}
-							if(ftp_server_connected == 1)
-								ftp_send_data();
-
-						}
-
-						vTaskDelay(200 / portTICK_RATE_MS);
-
-					}
-
-					XITC_Gprs_Disk.command = eFile_Close;
-					XITC_Gprs_Disk.signal = 1;
-					while (XITC_Gprs_Disk.signal)
-						vTaskDelay(5 / portTICK_RATE_MS);
-
-
-
-					if(ftp_status == 1){
-						if(ftp_line_no < 15){
-							XITC_Gprs_Disk.line_no = 1;
-
-						}
-						else
-							XITC_Gprs_Disk.line_no += ftp_line_no;
-
-						XITC_Gprs_Disk.command = eSetLineNo;
-						XITC_Gprs_Disk.signal = 1;
-						while(XITC_Gprs_Disk.signal)
-							vTaskDelay(5 / portTICK_RATE_MS);
-
-						if(ftp_line_no < 15){
-							XITC_Gprs_Disk.command = eDel_Ftp_File;
-							XITC_Gprs_Disk.signal = 1;
-							while(XITC_Gprs_Disk.signal)
-								vTaskDelay(100 / portTICK_RATE_MS);
-						}
-
-						vTaskDelay(200 / portTICK_RATE_MS);
-
-					}
-				}
-			}
-
-			Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 2000);
 			sleep_mode = 1;
 		}
 

@@ -325,7 +325,7 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9741391102");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.12");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.13");
 
 	// Primary Server: Bihar Govt / BMSK (JSON endpoint on port 8085)
 	strcpy(Global_Data_Params.gc_http_server_name1, "rtdasbmsk.spatika.net");
@@ -367,7 +367,7 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9449020611");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.12");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.13");
 
 	// HTTP Configuration for KSNDMC_TWS (SYSTEM 1 per Spatika / KSNDMC Specification)
 	strcpy(Global_Data_Params.gc_http_server_name1, "rtdas.ksndmc.net");
@@ -408,7 +408,7 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9449020611");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.12");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.13");
 
 	// Primary Server: KSNDMC (v3 Endpoint, form-encoded)
 	strcpy(Global_Data_Params.gc_http_server_name1, "rtdas.ksndmc.net");
@@ -1162,7 +1162,7 @@ void vMemory_Task(void *pvParameters)
 	//	init_entire_space();
 	vTaskDelay(100 / portTICK_RATE_MS);
 
-	strcpy(new_version, "TWS6-1.0.12");
+	strcpy(new_version, "TWS6-1.0.13");
 
 	Global_Data_Params_From_Flash = (Global_Data_Params_def*)PARAM_START_ADDR;
 
@@ -1491,11 +1491,8 @@ void vMemory_Task(void *pvParameters)
 			write_days_flag_data();
 			vTaskDelay(100 / portTICK_RATE_MS);
 			sleep_mode = 0;
-			if (!gUi_Active) {
-				system_enter_sleep();
-			} else {
-				shutdown_pwr = 1;
-			}
+			/* Always enter sleep upon telemetry completion to cut power rails via LPC845 */
+			system_enter_sleep();
 		}
 
 

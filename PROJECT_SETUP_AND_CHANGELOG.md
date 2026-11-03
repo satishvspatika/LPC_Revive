@@ -415,12 +415,34 @@ To effortlessly synchronize changes between your development laptop and office c
   3. **Accurate Virtual Host Mapping**: Mapped `117.216.42.181` to `gc_http_server_name1` (`rtdas.ksndmc.net`) and `144.91.104.105` to `gc_http_server_name2` (`rtdas.spatika.net`).
   4. Bumped firmware version strings to `TWS6-1.0.12`.
 
+### 24. Power-Down, NETLIGHT LED Shutoff & Sleep Rails Fix (`v1.0.13`)
+- **Problem**:
+  1. **Continuous GPRS / NETLIGHT LED Blinking After HTTP Transmission**: The SIM7600 NETLIGHT LED kept blinking continuously even after HTTP telemetry transmission completed, draining battery power.
+  2. **Legacy FTP Loops After HTTP**: In `Example01/gprs.c`, after `http_status == 1`, the code unconditionally entered a legacy FTP retry loop for older samples in `days_sector`, attempting `connect_ftp1()` to `ftp1.ksndmc.net`. Each failed FTP connection hung for 70s on `AT+CFTPSSTART` and 45s on `AT+CFTPSLOGIN`.
+  3. **PDP Bearer Left Active**: `AT+NETCLOSE` was never issued after HTTP telemetry completed, leaving the cellular PDP context active.
+  4. **Modem Baseband Power-Down (`AT+CPOF`) Never Executed**: The SIM7600 baseband was never commanded to shut down, so the modem remained fully powered and RF transmission/LED blinking continued indefinitely.
+  5. **Deadlock on `gUi_Active` Blocking Sleep & Power Rail Shutdown**:
+     - In `Example01/memory.c`, `if (sleep_mode == 1)` checked `if (!gUi_Active) system_enter_sleep(); else shutdown_pwr = 1;`. If the LCD had booted or a key was touched, `gUi_Active` was 1, so `system_enter_sleep()` was skipped.
+     - In `Example01/sensor.c:514`, `if (shutdown_pwr == 1 && !gUi_Active)` also blocked sending `$f7;\012` to LPC845 when `gUi_Active` was set. As a result, the LPC845 power rails (LPC1768 MCU, SIM7600, LCD) were never cut!
+     - In `Example01/ui.c:1102`, the 60s inactivity timeout only toggled the LCD display without triggering sleep.
+- **Fix**:
+  1. **Bypass Legacy FTP on HTTP Success**: In `Example01/gprs.c`, when `http_status == 1`, set `update_present_day_flag = 1;` and bypass all legacy FTP loops.
+  2. **Graceful Bearer Teardown & Modem Baseband Shutoff**: Immediately upon telemetry completion, execute `AT+CIPCLOSE=0`, `AT+NETCLOSE` (`+NETCLOSE: 0`), and `AT+CPOF` to shut down the SIM7600 baseband. This instantly turns off the NETLIGHT LED and saves power.
+  3. **Unconditional Sleep & Power Rail Cut**:
+     - In `Example01/memory.c`, when `sleep_mode == 1`, unconditionally invoke `system_enter_sleep()`.
+     - In `Example01/sensor.c`, removed the `!gUi_Active` gate so `shutdown_pwr == 1` immediately dispatches `$f7;\012` to LPC845 to cut power rails.
+     - In `Example01/ui.c`, updated the 60-second inactivity timeout to call `system_enter_sleep()` directly.
+  4. Bumped firmware version strings to `TWS6-1.0.13`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
 | :--- | :--- | :--- |
+| **Running FTP loops unconditionally after successful HTTP** | Hangs transmission for minutes trying to connect to FTP1 even when HTTP transmission already succeeded. | Skip legacy FTP loops entirely when `http_status == 1`. |
+| **Not closing PDP context (`AT+NETCLOSE`) and modem baseband (`AT+CPOF`) before sleep** | Keeps SIM7600 powered with NETLIGHT LED blinking fast continuously, draining power. | Always execute `AT+CIPCLOSE=0`, `AT+NETCLOSE`, and `AT+CPOF` upon telemetry completion before sleeping. |
+| **Gating `system_enter_sleep()` or `$f7;\012` power rail shutdown behind `!gUi_Active`** | If the operator touched a key or LCD activated, `gUi_Active` remains set, preventing LPC845 power rail shutdown and causing LPC1768 and modem to stay powered on continuously. | Unconditionally call `system_enter_sleep()` on `sleep_mode == 1`, dispatch `$f7;\012` on `shutdown_pwr == 1`, and trigger `system_enter_sleep()` on 60s UI inactivity. |
 | **Not flushing UART circular buffer before `AT+CIPOPEN`** | Preliminary `AT+CIPCLOSE=0` on an already-closed socket returns `ERROR`. Without flushing, `http_open_tcp()` reads this stale `ERROR` in 0 ms and aborts genuine connection attempts. | Always flush `gprs_recv_out_cnt = gprs_recv_in_cnt;` immediately before dispatching `AT+CIPOPEN=0`. |
 | **Sending `AT+CIPSEND` immediately after `+CIPOPEN: 0,0` without settling delay** | SIM7600 internal TCP stack needs ~50–150 ms to transition socket state to open. Immediate `AT+CIPSEND` returns `+CIPERROR: 4` (*Operation not allowed*). | Add a 150 ms delay (`vTaskDelay(150 / portTICK_RATE_MS)`) after receiving `+CIPOPEN: 0,0` before sending `AT+CIPSEND`. |
 | **Hardcoding MCUXpresso IDE plugin paths in `build.sh`** | MCUXpresso plugins contain installation-specific date stamps. Hardcoded paths fail to match, causing `build.sh` to silently skip final HEX linking and leave stale firmware in place. | Dynamically resolve toolchain and Redlib library paths relative to `arm-none-eabi-gcc` or via `/Applications/MCUXpresso*` wildcards. |
