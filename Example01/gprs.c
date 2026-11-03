@@ -2581,6 +2581,7 @@ void prepare_present_rec_for_http_sms(void){
 		}
 
 		float bat_volt = (last_rec_15min_bat1 > 0) ? ((((float)last_rec_15min_bat1 * 3.3f / 4095.0f) / 0.128f)) : 12.5f;
+		int yr = (xPresent_Date_Time.year >= 2000) ? xPresent_Date_Time.year : (xPresent_Date_Time.year > 0 ? (2000 + xPresent_Date_Time.year) : 2026);
 		char s_temp[10], s_hum[10], s_ws[10], s_wd[8], s_bat[10];
 		if (Packet_Data.temperature < 0.0f) {
 			snprintf(s_temp, sizeof(s_temp), "-%04.1f", -Packet_Data.temperature);

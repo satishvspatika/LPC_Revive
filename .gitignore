@@ -43,9 +43,10 @@ LPC845/build_v2/
 !Example01/Debug/boot_stub.hex
 !Example01/Debug/boot_stub.elf
 
-# Local machine-specific automation scripts
+# Local machine-specific automation scripts and local toolchain
 get_git.sh
 push_git.sh
+tools/
 
 # Keep verified production flash images (used by flash_lpc1768.sh and flash_lpc845.sh)
 !Example01/Debug/LPC1768_TWS_FULL.hex
