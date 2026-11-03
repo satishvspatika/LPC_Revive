@@ -701,7 +701,9 @@ void check_data_is_stored_in_flash(){
 				(days_sector[sect-2]->month == rf_close_month) &&
 				(days_sector[sect-2]->date == rf_close_date)){
 
-			found =1;
+			found = 1;
+			present_sector_no = sect;
+			present_sample_no = sampleNo;
 
 			if(days_sector[sect-2]->samples[sampleNo].rf != 0xFFFF)
 				data_not_stored_in_flash = 0;
