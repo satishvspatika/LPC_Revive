@@ -1810,8 +1810,11 @@ int http_open_tcp(char *server, int port) {
 	int timeout;
 
 	/* 1. Ensure socket 0 is closed before opening to prevent 'socket exists' / ERROR */
-	Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1500);
+	Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1000);
 	vTaskDelay(100 / portTICK_RATE_MS);
+
+	/* Flush circular buffer so no residual 'ERROR', 'OK', or stale URCs from CIPCLOSE remain */
+	gprs_recv_out_cnt = gprs_recv_in_cnt;
 
 	sprintf(log_tmp, "HTTP: Opening TCP %s:%d", server, port);
 	sd_log_http(log_tmp);
@@ -1843,6 +1846,7 @@ int http_open_tcp(char *server, int port) {
 				sscanf(p_open, "+CIPOPEN: 0,%d", &err_code);
 				if (err_code == 0) {
 					sd_log_http("HTTP: TCP connected (+CIPOPEN: 0,0 OK)!");
+					vTaskDelay(150 / portTICK_RATE_MS); /* Allow SIM7600 socket stack to settle before CIPSEND */
 					return 1; /* Success */
 				} else {
 					const char *err_desc = "Unknown error";
@@ -1856,18 +1860,24 @@ int http_open_tcp(char *server, int port) {
 					sprintf(log_tmp, "HTTP: CIPOPEN rejected: code %d (%s)", err_code, err_desc);
 					sd_log_http(log_tmp);
 					Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1500);
+					vTaskDelay(50 / portTICK_RATE_MS);
+					gprs_recv_out_cnt = gprs_recv_in_cnt;
 					return -1;
 				}
 			}
 			if (look_for_str(gprs_response, "ERROR") != 0) {
 				sd_log_http("HTTP: CIPOPEN returned ERROR");
 				Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1500);
+				vTaskDelay(50 / portTICK_RATE_MS);
+				gprs_recv_out_cnt = gprs_recv_in_cnt;
 				return -1;
 			}
 		}
 	}
 	sd_log_http("HTTP: CIPOPEN timed out (25s)!");
 	Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1500);
+	vTaskDelay(50 / portTICK_RATE_MS);
+	gprs_recv_out_cnt = gprs_recv_in_cnt;
 	return -1;
 }
 
@@ -1899,15 +1909,19 @@ int http_send_data_single(char *server, int port, char *path) {
 	}
 	formatted_path[sizeof(formatted_path) - 1] = 0;
 
+	/* Determine correct Host header: match IP to respective domain for virtual hosting */
+	const char *host_name = server;
+	if (strcmp(server, "117.216.42.181") == 0) {
+		host_name = Global_Data_Params.gc_http_server_name1;
+	} else if (strcmp(server, "144.91.104.105") == 0) {
+		host_name = Global_Data_Params.gc_http_server_name2;
+	}
+
 	int offset = snprintf(http_data, 1024, "POST %s HTTP/1.1\r\n", formatted_path);
 	if (port == 80) {
-		offset += snprintf(http_data + offset, 1024 - offset, "Host: %s\r\n", 
-			(strcmp(server, "117.216.42.181") == 0 || strcmp(server, "144.91.104.105") == 0) ? 
-			Global_Data_Params.gc_http_server_name1 : server);
+		offset += snprintf(http_data + offset, 1024 - offset, "Host: %s\r\n", host_name);
 	} else {
-		offset += snprintf(http_data + offset, 1024 - offset, "Host: %s:%d\r\n", 
-			(strcmp(server, "117.216.42.181") == 0 || strcmp(server, "144.91.104.105") == 0) ? 
-			Global_Data_Params.gc_http_server_name1 : server, port);
+		offset += snprintf(http_data + offset, 1024 - offset, "Host: %s:%d\r\n", host_name, port);
 	}
 	offset += snprintf(http_data + offset, 1024 - offset, "Connection: close\r\n");
 #if (UNIT_CFG == CFG_BIHAR_TRG)

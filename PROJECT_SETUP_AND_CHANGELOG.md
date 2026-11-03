@@ -404,12 +404,25 @@ To effortlessly synchronize changes between your development laptop and office c
   2. Auto-detects Redlib (`libcr_c.a`, `libcr_eabihelpers.a`) for both Cortex-M3 (`thumb/v7-m/nofp`) and Cortex-M0+ (`thumb/v6-m/nofp`).
   3. Prompts the developer clearly if MCUXpresso Redlib libraries are missing on the build host.
 
+### 23. Socket Handshake Race Condition & Virtual Host Header Resolution (`v1.0.12`)
+- **Problem**:
+  1. In `http_open_tcp()`, before issuing `AT+CIPOPEN=0`, `gprs_recv_out_cnt` was not synchronized to `gprs_recv_in_cnt`. Residual `ERROR` strings emitted by preliminary `AT+CIPCLOSE=0` remained in the circular buffer, causing `http_open_tcp()` to read stale `ERROR` in 0 ms and falsely report `HTTP: CIPOPEN returned ERROR`.
+  2. When Attempt 2 (Direct IP `117.216.42.181:80`) executed, `AT+CIPSEND=0,287` was dispatched before SIM7600 completed the asynchronous 3-way TCP handshake over LTE. The modem returned `+CIPERROR: 4` (*Socket not ready*), followed immediately by asynchronous `+CIPOPEN: 0,0`, causing Attempt 2 to fail and fall through to Attempt 3.
+  3. In `http_send_data_single()`, the `Host:` header check mapped both `117.216.42.181` and `144.91.104.105` to `gc_http_server_name1` (`rtdas.ksndmc.net`), which would have sent an incorrect virtual host header to the Spatika server.
+- **Fix**:
+  1. **Circular Buffer Flush**: Flushed `gprs_recv_out_cnt = gprs_recv_in_cnt;` immediately prior to issuing `AT+CIPOPEN=0` in `http_open_tcp()`, and cleared residual bytes after socket close errors.
+  2. **Socket Settling Delay**: Added a 150 ms settling delay upon receiving `+CIPOPEN: 0,0` before allowing `http_send_data_single()` to send `AT+CIPSEND=0,<len>`, eliminating the `+CIPERROR: 4` socket busy race condition.
+  3. **Accurate Virtual Host Mapping**: Mapped `117.216.42.181` to `gc_http_server_name1` (`rtdas.ksndmc.net`) and `144.91.104.105` to `gc_http_server_name2` (`rtdas.spatika.net`).
+  4. Bumped firmware version strings to `TWS6-1.0.12`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
 | :--- | :--- | :--- |
+| **Not flushing UART circular buffer before `AT+CIPOPEN`** | Preliminary `AT+CIPCLOSE=0` on an already-closed socket returns `ERROR`. Without flushing, `http_open_tcp()` reads this stale `ERROR` in 0 ms and aborts genuine connection attempts. | Always flush `gprs_recv_out_cnt = gprs_recv_in_cnt;` immediately before dispatching `AT+CIPOPEN=0`. |
+| **Sending `AT+CIPSEND` immediately after `+CIPOPEN: 0,0` without settling delay** | SIM7600 internal TCP stack needs ~50–150 ms to transition socket state to open. Immediate `AT+CIPSEND` returns `+CIPERROR: 4` (*Operation not allowed*). | Add a 150 ms delay (`vTaskDelay(150 / portTICK_RATE_MS)`) after receiving `+CIPOPEN: 0,0` before sending `AT+CIPSEND`. |
 | **Hardcoding MCUXpresso IDE plugin paths in `build.sh`** | MCUXpresso plugins contain installation-specific date stamps. Hardcoded paths fail to match, causing `build.sh` to silently skip final HEX linking and leave stale firmware in place. | Dynamically resolve toolchain and Redlib library paths relative to `arm-none-eabi-gcc` or via `/Applications/MCUXpresso*` wildcards. |
 | **Running unconditional mass-erase in `flash_lpc1768.sh`** | Mass-erase wipes Sector 1 (`0x1000`–`0x1FFF`), destroying configured Station ID (`001922`), GSM numbers, and calibration parameters. | Let LinkServer `load` erase only Sector 0 and Application sectors (`0x18000+`). Only mass-erase if `--mass-erase` flag is explicitly passed. |
 | **Running unconditional mass-erase in `flash_lpc1768.sh`** | Mass-erase wipes Sector 1 (`0x1000`–`0x1FFF`), destroying configured Station ID (`001922`), GSM numbers, and calibration parameters. | Let LinkServer `load` erase only Sector 0 and Application sectors (`0x18000+`). Only mass-erase if `--mass-erase` flag is explicitly passed. |
