@@ -391,12 +391,27 @@ To effortlessly synchronize changes between your development laptop and office c
   3. **Guarded Parameter Restoration**: Added validation in `memory.c` so parameter sector reinitialization will never overwrite a valid station ID with uninitialized memory if `gi_log_interval > 31`.
   4. Bumped firmware version strings to `TWS6-1.0.10`.
 
+### 22. Dynamic MCUXpresso Redlib Auto-Detection & HEX Re-linking (`v1.0.11`)
+- **Problem**:
+  1. In `Example01/build.sh` and `LPC845/build.sh`, the MCUXpresso IDE tools path was hardcoded to a specific timestamped directory (`MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/arm-none-eabi/lib/thumb/v7-m/nofp`).
+  2. When the user executed `./build_all.sh` on their Mac, the hardcoded directory did not match their installation, causing `build.sh` to compile all `.c` files to `.o` but **skip Step 2 (Linking)** and reuse the old `LPC1768_TWS_FULL.hex` from initial commit `d51b5f9` (which had `TWS6-1.0.3`).
+  3. When the user flashed, the board ran the old `TWS6-1.0.3` firmware:
+     - `1.0.3` had `AT+CNMP=13` (force 2G GSM), failing on Airtel 4G SIMs.
+     - With registration failing, the modem NETLIGHT / GPRS LED kept blinking fast continuously.
+     - `httplog.txt` was never generated because the updated telemetry logging code was never actually linked or flashed.
+- **Fix**:
+  1. Replaced hardcoded paths in `Example01/build.sh` and `LPC845/build.sh` with dynamic search using wildcards (`/Applications/MCUXpresso*`) and relative path resolution from `arm-none-eabi-gcc`.
+  2. Auto-detects Redlib (`libcr_c.a`, `libcr_eabihelpers.a`) for both Cortex-M3 (`thumb/v7-m/nofp`) and Cortex-M0+ (`thumb/v6-m/nofp`).
+  3. Prompts the developer clearly if MCUXpresso Redlib libraries are missing on the build host.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
 | :--- | :--- | :--- |
+| **Hardcoding MCUXpresso IDE plugin paths in `build.sh`** | MCUXpresso plugins contain installation-specific date stamps. Hardcoded paths fail to match, causing `build.sh` to silently skip final HEX linking and leave stale firmware in place. | Dynamically resolve toolchain and Redlib library paths relative to `arm-none-eabi-gcc` or via `/Applications/MCUXpresso*` wildcards. |
+| **Running unconditional mass-erase in `flash_lpc1768.sh`** | Mass-erase wipes Sector 1 (`0x1000`–`0x1FFF`), destroying configured Station ID (`001922`), GSM numbers, and calibration parameters. | Let LinkServer `load` erase only Sector 0 and Application sectors (`0x18000+`). Only mass-erase if `--mass-erase` flag is explicitly passed. |
 | **Running unconditional mass-erase in `flash_lpc1768.sh`** | Mass-erase wipes Sector 1 (`0x1000`–`0x1FFF`), destroying configured Station ID (`001922`), GSM numbers, and calibration parameters. | Let LinkServer `load` erase only Sector 0 and Application sectors (`0x18000+`). Only mass-erase if `--mass-erase` flag is explicitly passed. |
 | **Hardcoding fallback Station ID to `001060`** | `001060` was an old 2013 test ID. Blank/new sectors defaulted to 1060, requiring manual reconfiguration. | Set fallback default in `params_default()` to active test station ID (`001922`). |
 | **Adding large static buffers to `RamLoc32`** | LPC1768 `RamLoc32` has only 32 KB and is nearly full with FreeRTOS heap and FAT filesystem structures. Adding static buffers overflows `RamLoc32` `.bss`. | Relocate large telemetry buffers (`http_data`, `ftp_buff`) to AHB SRAM Bank 1 (`0x20080000`–`0x20083FFF`, 16 KB unreserved). |

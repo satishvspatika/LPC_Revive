@@ -4,8 +4,21 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EX_DIR="${PROJECT_ROOT}/Example01"
 SCRIPTS_DIR="${PROJECT_ROOT}/scripts"
 OUT_DIR="${EX_DIR}/Debug"
-# Auto-detect ARM GCC toolchain
-if [ -x "${PROJECT_ROOT}/tools/arm-toolchain/bin/arm-none-eabi-gcc" ]; then
+# Auto-detect ARM GCC toolchain and MCUXpresso IDE
+MCUX_BIN=$(ls -d /Applications/MCUXpressoIDE*/ide/plugins/com.nxp.mcuxpresso.tools.*/tools/bin 2>/dev/null | tail -n 1 || true)
+if [ -z "$MCUX_BIN" ]; then
+    MCUX_BIN=$(ls -d /Applications/MCUXpresso\ IDE*/MCUXpresso\ IDE.app/Contents/Eclipse/plugins/com.nxp.mcuxpresso.tools.*/tools/bin 2>/dev/null | tail -n 1 || true)
+fi
+
+if [ -n "$MCUX_BIN" ] && [ -x "${MCUX_BIN}/arm-none-eabi-gcc" ]; then
+    TC_DIR="${MCUX_BIN}"
+    CC="${TC_DIR}/arm-none-eabi-gcc"
+    AS="${TC_DIR}/arm-none-eabi-as"
+    LD="${TC_DIR}/arm-none-eabi-ld"
+    OBJCOPY="${TC_DIR}/arm-none-eabi-objcopy"
+    SIZE="${TC_DIR}/arm-none-eabi-size"
+    MCUX_TOOLS=$(cd "${MCUX_BIN}/.." && pwd)
+elif [ -x "${PROJECT_ROOT}/tools/arm-toolchain/bin/arm-none-eabi-gcc" ]; then
     TC_DIR="${PROJECT_ROOT}/tools/arm-toolchain/bin"
     CC="${TC_DIR}/arm-none-eabi-gcc"
     AS="${TC_DIR}/arm-none-eabi-as"
@@ -19,25 +32,9 @@ elif command -v arm-none-eabi-gcc >/dev/null 2>&1; then
     OBJCOPY="arm-none-eabi-objcopy"
     SIZE="arm-none-eabi-size"
 else
-    MCUX_BIN=$(ls -d /Applications/MCUXpressoIDE*/ide/plugins/com.nxp.mcuxpresso.tools.*/tools/bin 2>/dev/null | tail -n 1 || true)
-    if [ -n "$MCUX_BIN" ] && [ -x "${MCUX_BIN}/arm-none-eabi-gcc" ]; then
-        CC="${MCUX_BIN}/arm-none-eabi-gcc"
-        AS="${MCUX_BIN}/arm-none-eabi-as"
-        LD="${MCUX_BIN}/arm-none-eabi-ld"
-        OBJCOPY="${MCUX_BIN}/arm-none-eabi-objcopy"
-        SIZE="${MCUX_BIN}/arm-none-eabi-size"
-    elif [ -x "/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/bin/arm-none-eabi-gcc" ]; then
-        TC_DIR="/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/bin"
-        CC="${TC_DIR}/arm-none-eabi-gcc"
-        AS="${TC_DIR}/arm-none-eabi-as"
-        LD="${TC_DIR}/arm-none-eabi-ld"
-        OBJCOPY="${TC_DIR}/arm-none-eabi-objcopy"
-        SIZE="${TC_DIR}/arm-none-eabi-size"
-    else
-        echo "[ERROR] arm-none-eabi-gcc toolchain not found!"
-        echo "Please install MCUXpresso IDE or GNU Arm Embedded Toolchain, or add it to PATH."
-        exit 127
-    fi
+    echo "[ERROR] arm-none-eabi-gcc toolchain not found!"
+    echo "Please install MCUXpresso IDE or GNU Arm Embedded Toolchain, or add it to PATH."
+    exit 127
 fi
 
 echo "=== 1. Compiling upgraded sources (LPC1768) ==="
@@ -59,16 +56,37 @@ ${CC} ${CFLAGS} "${EX_DIR}/sensor.c" -o "${OUT_DIR}/sensor.o"
 ${CC} ${CFLAGS} "${EX_DIR}/disk.c" -o "${OUT_DIR}/disk.o"
 ${CC} ${CFLAGS} "${EX_DIR}/lcd.c" -o "${OUT_DIR}/lcd.o"
 
-MCUX_LIB1="/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/arm-none-eabi/lib/thumb/v7-m/nofp"
-if [ -d "${MCUX_LIB1}" ] || [ -f "${PROJECT_ROOT}/tools/lib/libcr_c.a" ]; then
-    echo "=== 2. Linking Example01.axf at 0x00018000 ==="
+# Locate Redlib libraries dynamically across any installed MCUXpresso IDE version
+REDLIB_DIR=""
+GCC_LIB_DIR=""
+
+if [ -n "${MCUX_TOOLS}" ] && [ -d "${MCUX_TOOLS}/arm-none-eabi/lib/thumb/v7-m/nofp" ]; then
+    REDLIB_DIR="${MCUX_TOOLS}/arm-none-eabi/lib/thumb/v7-m/nofp"
+    GCC_LIB_DIR=$(ls -d "${MCUX_TOOLS}"/lib/gcc/arm-none-eabi/*/thumb/v7-m/nofp 2>/dev/null | tail -n 1 || true)
+fi
+
+if [ -z "${REDLIB_DIR}" ] || [ ! -f "${REDLIB_DIR}/libcr_c.a" ]; then
+    REDLIB_C=$(find /Applications/MCUXpresso* -name "libcr_c.a" 2>/dev/null | grep -E "thumb/v7-?m" | head -n 1 || true)
+    if [ -n "${REDLIB_C}" ]; then
+        REDLIB_DIR=$(dirname "${REDLIB_C}")
+        MCUX_BASE=$(cd "${REDLIB_DIR}/../../../.." && pwd)
+        GCC_LIB_DIR=$(ls -d "${MCUX_BASE}"/lib/gcc/arm-none-eabi/*/thumb/v7-m/nofp 2>/dev/null | tail -n 1 || true)
+    fi
+fi
+
+if [ -z "${REDLIB_DIR}" ] && [ -d "${PROJECT_ROOT}/tools/lib" ]; then
+    REDLIB_DIR="${PROJECT_ROOT}/tools/lib"
+fi
+
+if [ -n "${REDLIB_DIR}" ] && [ -f "${REDLIB_DIR}/libcr_c.a" ]; then
+    echo "=== 2. Linking Example01.axf at 0x00018000 (Redlib: ${REDLIB_DIR}) ==="
     ${CC} \
       -nostdlib \
       -L"${PROJECT_ROOT}/CMSISv1p30_LPC17xx/Debug" \
       -L"${PROJECT_ROOT}/FreeRTOS_Library/Debug" \
       -L"${EX_DIR}/Debug" \
-      -L/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/arm-none-eabi/lib/thumb/v7-m/nofp \
-      -L/Applications/MCUXpressoIDE_24.9.25/ide/plugins/com.nxp.mcuxpresso.tools.macosx_24.9.0.202407110857/tools/lib/gcc/arm-none-eabi/13.2.1/thumb/v7-m/nofp \
+      -L"${REDLIB_DIR}" \
+      ${GCC_LIB_DIR:+-L"${GCC_LIB_DIR}"} \
       -Xlinker --gc-sections \
       -Xlinker -Map="${OUT_DIR}/Example01.map" \
       -mcpu=cortex-m3 -mthumb \
@@ -126,6 +144,7 @@ if [ -d "${MCUX_LIB1}" ] || [ -f "${PROJECT_ROOT}/tools/lib/libcr_c.a" ]; then
 else
     echo "=== 2. C Compilation Verified Successfully! ==="
     echo "✔ All LPC1768 C source files compiled cleanly with ZERO errors."
-    echo "  (Note: Final HEX relinking requires MCUXpresso IDE Redlib libraries)"
-    echo "  Existing verified flash image: ${OUT_DIR}/LPC1768_TWS_FULL.hex"
+    echo "  [NOTICE] MCUXpresso Redlib libraries (libcr_c.a) not found on this machine."
+    echo "  If on a machine with MCUXpresso IDE, ensure /Applications/MCUXpressoIDE* is present."
+    echo "  Existing flash image: ${OUT_DIR}/LPC1768_TWS_FULL.hex"
 fi
