@@ -431,14 +431,28 @@ void vDisk_Task(void *pvParameters)
 		taskEXIT_CRITICAL();
 		vTaskDelay(1000 / portTICK_RATE_MS);
 
+		/* Periodic retry to auto-detect SD Card if not yet mounted or hot-plugged */
+		static int sdc_retry_cnt = 0;
+		if (!gi_disk_ok) {
+			if (++sdc_retry_cnt >= 10) {
+				sdc_retry_cnt = 0;
+				check_sdc_status();
+			}
+		}
+
 		vTaskDelay(100 / portTICK_RATE_MS);
 
 
 		if(XITC_Memory_Disk.signal == 1){
 			// Logging to disk starts here..
 			if(XITC_Memory_Disk.command == eLog){
-				sprintf(src_filename, "%02d%02d%04d.txt",
-						XITC_Memory_Disk.date, XITC_Memory_Disk.month, XITC_Memory_Disk.year);
+				int log_yr = XITC_Memory_Disk.year;
+				if (log_yr < 100 && log_yr > 0) log_yr += 2000;
+				if (log_yr < 2020) log_yr = 2026;
+				int log_mo = (XITC_Memory_Disk.month >= 1 && XITC_Memory_Disk.month <= 12) ? XITC_Memory_Disk.month : 1;
+				int log_dt = (XITC_Memory_Disk.date >= 1 && XITC_Memory_Disk.date <= 31) ? XITC_Memory_Disk.date : 1;
+
+				sprintf(src_filename, "%02d%02d%04d.txt", log_dt, log_mo, log_yr);
 
 				fret = f_mount(0,&Fatfs[0]);
 
@@ -447,7 +461,9 @@ void vDisk_Task(void *pvParameters)
 					f_lseek(&File_Sd, File_Sd.fsize);
 					f_write(&File_Sd, XITC_Memory_Disk.record, strlen(XITC_Memory_Disk.record),&BytesWritten);
 					f_close(&File_Sd);
-
+					gi_disk_ok = 1;
+				} else {
+					gi_disk_ok = 0;
 				}
 			}
 

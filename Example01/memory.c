@@ -7,6 +7,7 @@
 #include "ui.h"
 #include "gprs.h"
 #include "sensor.h"
+#include "disk.h"
 
 typedef void(*IAP)(unsigned long[], unsigned long[]);
 IAP iap_entry;
@@ -325,7 +326,7 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9741391102");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.17");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.18");
 
 	// Primary Server: Bihar Govt / BMSK (JSON endpoint on port 8085)
 	strcpy(Global_Data_Params.gc_http_server_name1, "rtdasbmsk.spatika.net");
@@ -367,7 +368,7 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9449020611");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.17");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.18");
 
 	// HTTP Configuration for KSNDMC_TWS (SYSTEM 1 per Spatika / KSNDMC Specification)
 	strcpy(Global_Data_Params.gc_http_server_name1, "rtdas.ksndmc.net");
@@ -408,7 +409,7 @@ void params_default(void){
 	strcpy(Global_Data_Params.gc_secondary_gsm2, "9482841038");
 	strcpy(Global_Data_Params.gc_secondary_gsm3, "9449020611");
 
-	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.17");
+	strcpy(Global_Data_Params.gc_version, "TWS6-1.0.18");
 
 	// Primary Server: KSNDMC (v3 Endpoint, form-encoded)
 	strcpy(Global_Data_Params.gc_http_server_name1, "rtdas.ksndmc.net");
@@ -1164,7 +1165,7 @@ void vMemory_Task(void *pvParameters)
 	//	init_entire_space();
 	vTaskDelay(100 / portTICK_RATE_MS);
 
-	strcpy(new_version, "TWS6-1.0.17");
+	strcpy(new_version, "TWS6-1.0.18");
 
 	Global_Data_Params_From_Flash = (Global_Data_Params_def*)PARAM_START_ADDR;
 
@@ -1373,6 +1374,9 @@ void vMemory_Task(void *pvParameters)
 
 				vTaskDelay(100 / portTICK_RATE_MS);
 
+				if(!gi_disk_ok){
+					check_sdc_status();
+				}
 				if(gi_disk_ok == 1){
 					store_data_in_disk();
 					vTaskDelay(100 / portTICK_RATE_MS);

@@ -752,22 +752,13 @@ static void wake_display(void)
 	gUi_Active = 1;
 	lcd_active = 1;
 
-	/* 1. Ensure LPC845 5V rail to LCD is active */
-	sensor_send_cmd_direct("$n4;\012");
-	vTaskDelay(60 / portTICK_RATE_MS);
-
-	/* 2. Re-initialize HD44780 LCD controller (clears 8-bit garbage / ///00?????/////) */
+	/* 1. Turn on LCD display pixels */
 	wait_for_lcd_idle();
-	XITC_Ui_Lcd.lcd_cmd = eLcd_Init;
-	XITC_Ui_Lcd.sig = 1;
-	wait_for_lcd_idle();
-
-	/* 3. Turn on display controller */
 	XITC_Ui_Lcd.lcd_cmd = eLcd_On;
 	XITC_Ui_Lcd.sig = 1;
 	wait_for_lcd_idle();
 
-	/* 4. Directly activate backlight hardware pin */
+	/* 2. Directly activate backlight hardware pin */
 	lcd_backlight_on();
 }
 
@@ -779,14 +770,11 @@ static void sleep_display(void)
 	/* 1. Directly deactivate backlight hardware pin */
 	lcd_backlight_off();
 
-	/* 2. Turn off LCD command to controller */
+	/* 2. Turn off LCD display pixels (HD44780 controller remains powered at 5V, 4-bit mode preserved) */
 	wait_for_lcd_idle();
 	XITC_Ui_Lcd.lcd_cmd = eLcd_Off;
 	XITC_Ui_Lcd.sig = 1;
 	wait_for_lcd_idle();
-
-	/* 3. Request LPC845 to cut 5V rail to LCD */
-	sensor_send_cmd_direct("$f4;\012");
 }
 
 static void toggle_display(void)
@@ -870,22 +858,27 @@ void vUi_Task(void *pvParameters)
 
 	/* Startup synchronization: ensure hardware drivers & sensor UART are ready */
 	XITC_Ui_Lcd.sig = 0;
+	while (!lcd_task_started) {
+		vTaskDelay(20 / portTICK_RATE_MS);
+	}
 	while (!kbd_task_started) {
-		vTaskDelay(50 / portTICK_RATE_MS);
+		vTaskDelay(20 / portTICK_RATE_MS);
 	}
 	while (!memory_task_started) {
-		vTaskDelay(50 / portTICK_RATE_MS);
+		vTaskDelay(20 / portTICK_RATE_MS);
 	}
 	while (!sensor_task_started) {
-		vTaskDelay(50 / portTICK_RATE_MS);
+		vTaskDelay(20 / portTICK_RATE_MS);
 	}
 
 	XITC_Ui_Disk.command = eITC_Ui_Disk_Nop;
 
-	/* Turn on display and show splash screen immediately (<300ms) */
-	wake_display();
+	/* Turn on display and show splash screen */
+	lcd_active = 1;
+	gUi_Active = 1;
+	lcd_backlight_on();
 	ui_send_lcd(WELCOME_STR1, " INITIALIZING.. ");
-	vTaskDelay(300 / portTICK_RATE_MS);
+	vTaskDelay(600 / portTICK_RATE_MS);
 
 	/* Transition cleanly from splash to Station ID home screen */
 	current_screen = SCR_STATION;
@@ -911,6 +904,10 @@ void vUi_Task(void *pvParameters)
 			if (!lcd_active) {
 				wake_display();
 				need_render = 1;
+				/* If key was DSP key, wake is already achieved; do not toggle back off */
+				if (key == eDisp_Key) {
+					continue;
+				}
 			}
 
 			if (current_mode == UI_MODE_CALIB) {
@@ -1048,12 +1045,8 @@ void vUi_Task(void *pvParameters)
 					break;
 
 				case eDisp_Key:
-					/* Toggle screen sleep / wake up */
-					if (!lcd_active) {
-						gUi_Active = 1;
-						power_on_sim_module();
-					}
-					toggle_display();
+					/* Screen is active; pressing DSP puts it to sleep */
+					sleep_display();
 					break;
 
 				default:

@@ -501,10 +501,46 @@ To effortlessly synchronize changes between your development laptop and office c
 
 ---
 
+### Section 28: Bulletproof HD44780 LCD Timing, Non-Cutting Display Sleep, and Zero-Surprise System Flow (v1.0.18)
+
+- **Release Date**: November 3, 2026
+- **Firmware Version**: `TWS6-1.0.18`
+- **Key Enhancements & Bug Fixes**:
+  1. **Eliminated Destructive 5V Rail Shutdown (`$f4`) in `sleep_display()`**:
+     - *Issue*: Inactivity timeout called `sleep_display()`, which sent `$f4;\012` to LPC845 to physically cut the 5V power rail to the LCD. When woken, the 5V rail took hundreds of milliseconds to ramp up while LPC1768 immediately sent `eLcd_Init`, causing HD44780 to completely miss the 4-bit initialization sequence and remain dead/blank. Furthermore, HD44780 controller without backlight draws `< 0.25 mA` (< 1.3 mW).
+     - *Fix*: `sleep_display()` now simply turns off the backlight (`lcd_backlight_off()`) and sends `eLcd_Off` (command 0x08). The 5V rail remains powered, 4-bit nibble synchronization is never lost, and waking is instantaneous (< 1 ms) via `eLcd_On` and `lcd_backlight_on()`.
+  2. **Fixed DSP Key Sleep/Wake Recursion**:
+     - *Issue*: When screen was asleep, pressing DSP key woke the display (`lcd_active = 1`), but then immediately fell into `case eDisp_Key:` which called `toggle_display()`. Because `lcd_active` was now 1, it immediately put the screen back to sleep!
+     - *Fix*: If `!lcd_active`, waking the display on `eDisp_Key` consumes the event via `continue;`, cleanly staying awake.
+  3. **Strict HD44780 Nibble Timing & Setup Times**:
+     - *Issue*: `Output_Lcd()` was driving EN high *before* clearing and setting data lines, and EN pulse width was only ~80 ns (`d < 20`). Missed nibbles permanently swapped high and low nibbles, turning commands like `0x80` into `0x08` (Display OFF).
+     - *Fix*: Created `lcd_write_nibble()`:
+       1. Drives RS and RW while EN is LOW.
+       2. Drives D4..D7 data while EN is LOW.
+       3. Delays 500 ns address/data setup time.
+       4. Pulses EN HIGH for 2 µs.
+       5. Drops EN LOW (falling edge latches data).
+       6. Delays 2 µs hold/cycle recovery time.
+       7. Clear Display (`0x01`) and Return Home (`0x02`) enforce 3 ms execution delay.
+  4. **Eliminated Boot Race Condition with `lcd_task_started`**:
+     - *Issue*: `vUi_Task` never waited for `vLcd_Task` to finish `Initialize_Lcd()`, causing startup splash screen writes to collide with power-on reset nibbles and freeze at `VARSHA-TWS INITIALIZING..`.
+     - *Fix*: `vLcd_Task` signals `lcd_task_started = 1;` at completion of `Initialize_Lcd()`. `vUi_Task` startup synchronization loops on `while (!lcd_task_started) vTaskDelay(20);`.
+  5. **Auto-Recovery for SD Card Storage**:
+     - *Issue*: `check_sdc_status()` was only called once at boot. If SD card was inserted late or needed settling, `gi_disk_ok` stayed 0 forever, skipping all daily telemetry logging (`store_data_in_disk()`). In addition, 2-digit years were not normalized, resulting in files named `03110026.txt`.
+     - *Fix*: `vDisk_Task` retries `check_sdc_status()` every 10 seconds if `!gi_disk_ok`. `store_data_in_disk()` auto-retries `check_sdc_status()` before writing. Years are normalized to 4-digit (e.g. 26 -> 2026), guaranteeing daily log files named `DDMM2026.txt`.
+  6. **Bumped Firmware Version**: Updated to `TWS6-1.0.18`.
+
+---
+
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
 | :--- | :--- | :--- |
+| **Cutting 5V LCD power rail via `$f4` during display sleep** | Destroys HD44780 4-bit nibble synchronization, causes rail power bounce, and risks ESD latchup via backfeeding I/O pins. The LCD controller alone draws `< 0.25 mA`. | Keep 5V rail continuously ON while LPC1768 is running. Sleep display by turning off backlight and sending `0x08` (Display OFF); wake display instantly with `0x0C` (Display ON) and backlight ON. |
+| **Pulsing LCD EN before setting data lines or with < 230ns pulse width** | Violates HD44780 setup timing ($t_{AS} \ge 40\text{ ns}, t_{DS} \ge 80\text{ ns}, t_W \ge 230\text{ ns}$). Causes missed nibbles which permanently swap high/low nibble alignment, turning address `0x80` into Display OFF `0x08`. | Always place RS, RW, and D4..D7 data on the bus while EN is LOW, delay $\ge 500\text{ ns}$, pulse EN for $\ge 2\text{ µs}$, and drop EN LOW. |
+| **Starting UI rendering before `lcd_task_started == 1`** | `Initialize_Lcd()` takes ~75 ms. Sending splash screen or display commands during this window corrupts 4-bit mode setup and freezes the screen at `VARSHA-TWS INITIALIZING..`. | Always synchronize `vUi_Task` on `while (!lcd_task_started) vTaskDelay(20);`. |
+| **Calling `check_sdc_status()` only once at boot** | If SD card powers up slower than MCU or is inserted after boot, `gi_disk_ok` remains 0 forever, silently disabling all daily logging. | Periodically retry `check_sdc_status()` in `vDisk_Task` and before `store_data_in_disk()` if `gi_disk_ok == 0`. |
+| **Formatting SD log file year as `%04d` without 2-digit normalization** | 2-digit year (e.g. 26) formats as `0026`, creating files like `03110026.txt` instead of `03112026.txt`. | Normalize year: `if (yr < 100 && yr > 0) yr += 2000; if (yr < 2020) yr = 2026;`. |
 | **Silently skipping linker stage when Redlib is absent** | Causes `build.sh` to exit with success while leaving stale binaries from previous commits on disk. Flashing appears successful, but the device runs old code. | Always provide a standalone GNU Arm linker fallback (`example01_gnu.ld`) with `nano.specs` so builds never produce stale images. |
 | **Polling LCD busy flag in an infinite loop without dual EN strobes** | On 4-bit bus mode, reading the busy flag requires two EN strobes (high nibble, low nibble). Polling single pin floats high with pull-up, trapping the MCU in an infinite loop. | Use calibrated microsecond execution delays (~50 µs) instead of busy-flag polling on HD44780 LCDs. |
 | **Calling `system_enter_sleep()` on UI inactivity timeout** | Traps `vKbd_Task` and `vUi_Task` in `while (shutdown_pwr == 1)` and tristates pins without LPC845 cutting power, making the keypad unresponsive. | Call `sleep_display()` to turn off the LCD backlight while keeping tasks and keypad scanning active. |
