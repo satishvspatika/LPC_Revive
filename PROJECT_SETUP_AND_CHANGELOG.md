@@ -360,6 +360,22 @@ To effortlessly synchronize changes between your development laptop and office c
   6. **Body Validation & Flash Tracking**: Logged validation of `SUCCESS`, `REJECTED`, and `INVALID`, remote socket closure (`+CIPCLOSE: 0`), and sample marking confirmation (`HTTP: Present sample marked SENT in Flash`).
   7. Bumped firmware version strings to `TWS6-1.0.9`.
 
+### 20. SWD Wire Speed Signal Integrity & `flash_lpc1768.sh` Verification Fix (`v1.0.9`)
+- **Problem**:
+  1. During flashing on developer laptop, LinkServer mass-erased the chip, programmed Sector 0 (56 bytes), but crashed at 38% while writing the Application at `0x18000`:
+     ```text
+     Nc: 00025000 done  38% (53248 out of 137732)
+     Nc: request to clear DAP error failed - status 131
+     Nc: After error Ee(83). Hardware Transfer Error -
+     Pb: (100) Writing Flash ended with an error.
+     Ed:05: File 'tmpc3vqf1di.elf' load failure: Em(17). Debug port inaccessible
+     ```
+  2. Because `flash_lpc1768.sh` checked `grep -q "Sectors written:"` (which matched `Sectors written: 5`), the script falsely reported `Flash write confirmed OK` even though the write aborted at 38%, leaving corrupted/partial firmware on the target.
+  3. The root cause was `"wirespeed": 500000` (500 kHz) in `scripts/lpc1768-mculink.json`. High SWD clock frequency over ribbon cables and probe capacitance causes CoreSight DAP transfer errors under sustained writes.
+- **Fix**:
+  1. Reduced `wirespeed` in `scripts/lpc1768-mculink.json` from `500000` to `100000` (100 kHz), providing noise immunity and stable SWD communications across ribbon cables.
+  2. Updated `flash_lpc1768.sh` to strictly verify `Finished writing Flash successfully` and abort with an explicit error code on `Writing Flash ended with an error`, `Hardware Transfer Error`, or `Could not connect to core`.
+
 ---
 
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
