@@ -801,5 +801,52 @@ To effortlessly synchronize changes between your development laptop and office c
 6. **Firmware Version Bump (`memory.c`)**:
    - Updated version strings to `TWS6-1.0.25`.
 
+---
+
+## 36. Release v1.0.26 — Keypad Stuck-Key Auto-Recovery, Baseline Matrix Validation, 10ms FatFs Disk Timer, and Robust Cellular Power Management
+
+### 36.1 Overview & Root Causes
+- **Symptom 1**: Keypad completely unresponsive and frozen on landing screen `KSNDMC - TWS / ID:1922` immediately on boot.
+- **Symptom 2**: Station ID landing screen in v1.0.25 no longer displayed live matrix diagnostic parameters (`K:` and `C:`), making hardware troubleshooting blind.
+- **Symptom 3**: MicroSD card never created or updated `httplog.txt`, even though an SD card was inserted and cellular communication was active.
+- **Symptom 4**: SIM7600 `NETLIGHT` LED kept blinking indefinitely even after the LCD turned off on 60-second idle timeout, wasting battery power.
+- **Root Cause 1 (Keypad Wait-Release Deadlock & Baseline Leakage)**:
+  - In `vKbd_Task` (`kbd.c`), `KBD_STATE_WAIT_RELEASE` reset `release_count = 0` whenever `iScanned_Key != 0`. If a key was held, if contact bounce / leakage kept `iScanned_Key != 0`, or if baseline leakage on Column 3 (`P0.20`) read logic 0, the state machine became trapped in `WAIT_RELEASE` indefinitely.
+  - Startup race condition: `vUi_Task` flushes `XITC_Kbd_Log.sig_key = 0` after 600 ms splash delay. If `vKbd_Task` detected contact bounce or line settling during the first 600 ms, it entered `WAIT_RELEASE`, but `vUi_Task` discarded the key, leaving `vKbd_Task` stuck waiting for release.
+  - Matrix scanning lacked baseline validation: if any column had weak pull-up or ground short, `Kbd_Scan()` permanently returned a phantom key (e.g. Key 3 on Row 0).
+- **Root Cause 2 (Missing FatFs Disk Timers)**:
+  - `MMC_disk_timerproc()` was only called from the legacy `vRTC_Task`. When `vRTC_Task` was disabled/removed in favor of the LPC845 coprocessor, no task was calling `disk_timerproc()` / `MMC_disk_timerproc()`.
+  - As a result, FatFs decrement timers (`Timer1`, `Timer2`) were never decremented, `Stat` never cleared `STA_NODISK`, `MMC_disk_initialize()` and `wait_ready()` failed or timed out, and `gi_disk_ok` remained 0 permanently. `sd_log_http()` aborted on `gi_disk_ok != 1`, writing zero bytes to `httplog.txt`.
+- **Root Cause 3 (Uncoordinated Modem Power-Down via UI Task)**:
+  - `vUi_Task` called `gprs_send_cmd_direct("AT+CPOF\r\n")` directly on UART2 upon 60-second operator inactivity timeout while `vGprs_Task` was simultaneously running network registration or HTTP commands.
+  - This corrupted UART2 AT command exchanges, prevented `AT+CPOF` from completing, and left the SIM7600 powered up with `NETLIGHT` blinking indefinitely.
+
+### 36.2 Architecture Fixes & Implementation
+1. **Keypad Stuck-Key Recovery & Baseline Qualification (`kbd.c`, `kbd.h`)**:
+   - Implemented baseline column qualification in `Kbd_Scan()`: reads columns while ALL rows are driven HIGH (`FIOSET`). Any column line that reads 0 when all rows are HIGH is flagged in `stuck_cols` and masked out of row scanning, completely preventing phantom keys from baseline leakage.
+   - Added stuck-key auto-recovery timeout in `vKbd_Task`: if in `KBD_STATE_WAIT_RELEASE` for $\ge 40$ cycles (400 ms), the state machine automatically re-arms to `KBD_STATE_IDLE`.
+   - Added key rollover handling: if an operator presses a new key without fully releasing the previous one, `vKbd_Task` immediately transitions to debounce the new key.
+   - Single clean scan ($10\text{ ms}$) of `iScanned_Key == 0` now cleanly confirms release.
+2. **Restored Live Diagnostic Overlay on Landing Screen (`ui.c`)**:
+   - Updated `SCR_STATION` Line 2 to display live diagnostic parameters:
+     `snprintf(line2, 17, "ID:%-4.4s K:%d S:%dC%d", sid, dbg_last_key, dbg_kbd_state, dbg_raw_cols);`
+     - `ID:1922`: Station ID.
+     - `K:<1-9>`: Last confirmed key event.
+     - `S:<0-2>`: Keypad state (0 = IDLE, 1 = DEBOUNCE, 2 = WAIT_RELEASE).
+     - `C<0-7>`: Live raw column bits ($7 = \text{all HIGH}, 6 = \text{Col 3 LOW}, 5 = \text{Col 2 LOW}, \text{etc.}$).
+3. **Carousel Inversion Guard (`ui.c`)**:
+   - Clamped UP / LEFT arrow at `SCR_STATION`: wraps within the sensor telemetry group (`SCR_SOLAR`), strictly preventing accidental backward wrap into destructive action screens (`SCR_ACT_WIPE_DATA`, `SCR_ACT_SLEEP`).
+4. **10ms FatFs Disk Timer Engine & Mutex Thread Safety (`disk.c`)**:
+   - Updated `vDisk_Task` to tick at $10\text{ ms}$ intervals, invoking `disk_timerproc()` on every cycle.
+   - Ticks 200 ms of `disk_timerproc()` on boot before first SDC mount attempt, ensuring `Stat` clears `STA_NODISK`.
+   - Protected `check_sdc_status()` and `vDisk_Task` file operations with `xDiskMutex` to ensure zero collision with `sd_log_http()`.
+   - Full diagnostic traces now write to `/httplog.txt` on the MicroSD card on every boot, registration check, and HTTP session.
+5. **Deterministic SIM7600 Power-Down (`gprs.c`, `ui.c`)**:
+   - Removed all direct `AT+CPOF` transmissions from `vUi_Task`. Modem lifecycle is managed strictly and exclusively by `vGprs_Task`.
+   - After telemetry transmission completes (or after 60-second boot registration timeout), `vGprs_Task` gracefully tears down sockets (`AT+CIPCLOSE=0`, `AT+NETCLOSE`), issues `AT+CPOF\r\n`, and falls back to a 2.5-second `PWRKEY` (P0.1) hardware pulse if `AT+CPOF` does not acknowledge within 3 seconds.
+   - Guarantees `NETLIGHT` LED turns off completely and the modem draws zero standby current.
+6. **Firmware Version Bump (`memory.c`)**:
+   - Updated firmware version to `TWS6-1.0.26`.
+
 
 

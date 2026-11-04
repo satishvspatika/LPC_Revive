@@ -2948,10 +2948,19 @@ void vGprs_Task( void *pvParameters){
 				sd_log_http("NET: SIM registered on network. Initial boot telemetry sync triggered.");
 				gi_manual_http_trigger = 1;
 				gi_data_ready_for_report = 1;
-			} else if (boot_wait_ticks >= 90) {
+			} else if (boot_wait_ticks >= 60) {
 				boot_sync_done = 1;
-				sd_log_http("NET: Boot registration timeout (90s). Shutting down modem to conserve battery.");
-				Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
+				sd_log_http("NET: Boot registration timeout (60s). Shutting down modem to conserve battery.");
+				Send_And_Check_Gprs("AT+CIPCLOSE=0\r\n", "OK", "ERROR", 1000);
+				Send_And_Check_Gprs("AT+NETCLOSE\r\n", "+NETCLOSE: 0", "ERROR", 2000);
+				vTaskDelay(100 / portTICK_RATE_MS);
+				response_no = Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
+				if (response_no != eAck) {
+					/* Force hardware power off via PWRKEY (P0.1) LOW for 2.5s */
+					GPIO_ClearValue(PWR_KEY_PORT, PWR_KEY_MASK);
+					vTaskDelay(2500 / portTICK_RATE_MS);
+					GPIO_SetValue(PWR_KEY_PORT, PWR_KEY_MASK);
+				}
 				gprs_modem_active = 0;
 				sd_log_http("NET: Modem powered down. NETLIGHT LED off.");
 			}
@@ -3338,7 +3347,13 @@ void vGprs_Task( void *pvParameters){
 			Send_And_Check_Gprs("AT+NETCLOSE\r\n", "+NETCLOSE: 0", "ERROR", 3000);
 			vTaskDelay(100 / portTICK_RATE_MS);
 			sd_log_http("NET: Shutting down SIM7600 cellular engine (AT+CPOF)...");
-			Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
+			response_no = Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
+			if (response_no != eAck) {
+				/* Hardware fallback: pulse PWRKEY (P0.1) for 2.5s */
+				GPIO_ClearValue(PWR_KEY_PORT, PWR_KEY_MASK);
+				vTaskDelay(2500 / portTICK_RATE_MS);
+				GPIO_SetValue(PWR_KEY_PORT, PWR_KEY_MASK);
+			}
 			gprs_modem_active = 0;
 			sd_log_http("NET: Modem powered down. NETLIGHT LED off. Entering sleep.");
 			vTaskDelay(200 / portTICK_RATE_MS);

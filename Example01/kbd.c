@@ -8,6 +8,7 @@
 volatile int dbg_last_key = 0;
 volatile int dbg_raw_cols = 7;
 volatile uint32_t dbg_key_count = 0;
+volatile int dbg_kbd_state = 0;
 
 /*-------------------------------------------------------------------------------------------------------------------*
 * 	FUNCTION NAME : init_kbd_pins
@@ -173,25 +174,46 @@ int Read_Col_Pressed(void) {
 
 int Kbd_Scan(void) {
 	int iRow_No;
-	int iCol_No;
 	int iKey_Value = 0;
+	uint32_t baseline_port0;
+	uint32_t stuck_cols = 0;
 
 	// Ensure all rows are idle HIGH before scanning
 	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
 	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
 
+	/* Baseline qualification: Read columns while ALL rows are driven HIGH.
+	 * If any column pin reads 0 when ALL rows are 1, that line has an external pull-down
+	 * or ground short and must be ignored during scanning to avoid phantom keys. */
+	baseline_port0 = LPC_GPIO0->FIOPIN;
+	dbg_raw_cols = (int)((baseline_port0 >> 20) & 0x07);
+
+	if ((baseline_port0 & KBD_COL0_MASK) == 0) stuck_cols |= KBD_COL0_MASK;
+	if ((baseline_port0 & KBD_COL1_MASK) == 0) stuck_cols |= KBD_COL1_MASK;
+	if ((baseline_port0 & KBD_COL2_MASK) == 0) stuck_cols |= KBD_COL2_MASK;
+
 	for (iRow_No = 0; iRow_No < MAX_ROWS; iRow_No++) {
 		Output_Row(iRow_No);
 		/* Full 1ms settling delay for line capacitance & pull-ups */
 		vTaskDelay(1 / portTICK_RATE_MS);
-		iCol_No = Read_Col_Pressed();
+		uint32_t port0 = LPC_GPIO0->FIOPIN;
 
 		// Restore rows to HIGH immediately after reading columns
 		LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
 		LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
 
-		if (iCol_No != 0) {
-			iKey_Value = iRow_No * MAX_ROWS + iCol_No;
+		/* A valid key requires the column to be LOW during row assert AND NOT stuck LOW at baseline */
+		if ((port0 & KBD_COL0_MASK) == 0 && !(stuck_cols & KBD_COL0_MASK)) {
+			iKey_Value = iRow_No * MAX_ROWS + 1;
+			dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+			break;
+		} else if ((port0 & KBD_COL1_MASK) == 0 && !(stuck_cols & KBD_COL1_MASK)) {
+			iKey_Value = iRow_No * MAX_ROWS + 2;
+			dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+			break;
+		} else if ((port0 & KBD_COL2_MASK) == 0 && !(stuck_cols & KBD_COL2_MASK)) {
+			iKey_Value = iRow_No * MAX_ROWS + 3;
+			dbg_raw_cols = (int)((port0 >> 20) & 0x07);
 			break;
 		}
 	}
@@ -241,6 +263,7 @@ void vKbd_Task(void *pvParameters)
 	int candidate_key = 0;
 	int debounce_count = 0;
 	int release_count = 0;
+	int hold_timer = 0;
 	int iScanned_Key = 0;
 	static int pins_released = 0;
 
@@ -249,8 +272,8 @@ void vKbd_Task(void *pvParameters)
 	init_kbd_pins();
 	kbd_task_started = 1;
 
-	/* 200ms power-on rail settling delay before first scan */
-	vTaskDelay(200 / portTICK_RATE_MS);
+	/* 300ms power-on rail settling delay before first scan */
+	vTaskDelay(300 / portTICK_RATE_MS);
 
 	for (;;) {
 		vTaskDelay(10 / portTICK_RATE_MS);
@@ -270,6 +293,7 @@ void vKbd_Task(void *pvParameters)
 		}
 
 		iScanned_Key = Kbd_Scan(); // Scan matrix for pressed key
+		dbg_kbd_state = kbd_state;
 
 		switch (kbd_state) {
 		case KBD_STATE_IDLE:
@@ -290,6 +314,7 @@ void vKbd_Task(void *pvParameters)
 					dbg_last_key = candidate_key;
 					dbg_key_count++;
 					release_count = 0;
+					hold_timer = 0;
 					kbd_state = KBD_STATE_WAIT_RELEASE;
 				}
 			} else {
@@ -299,14 +324,23 @@ void vKbd_Task(void *pvParameters)
 			break;
 
 		case KBD_STATE_WAIT_RELEASE:
+			hold_timer++;
 			if (iScanned_Key == 0) {
 				release_count++;
-				if (release_count >= 2) {
-					/* Confirmed clean physical release across 2 consecutive cycles */
+				if (release_count >= 1) {
+					/* Confirmed clean physical release */
 					kbd_state = KBD_STATE_IDLE;
 				}
+			} else if (iScanned_Key != candidate_key) {
+				/* Operator pressed another key without releasing previous one:
+				 * immediately debounce new key */
+				candidate_key = iScanned_Key;
+				debounce_count = 1;
+				kbd_state = KBD_STATE_DEBOUNCE;
+			} else if (hold_timer >= 40) {
+				/* Stuck key recovery (400ms hold timeout): auto-rearm state machine */
+				kbd_state = KBD_STATE_IDLE;
 			} else {
-				/* Key still held down or bouncing */
 				release_count = 0;
 			}
 			break;

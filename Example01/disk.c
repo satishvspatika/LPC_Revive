@@ -94,6 +94,15 @@ void check_sdc_status(void){
 	//create a file name with spatika.txt and written a string Welcome
 	char cmp_str[16], *match_ptr;
 
+	if (xDiskMutex == NULL) {
+		xDiskMutex = xSemaphoreCreateMutex();
+	}
+	if (xDiskMutex != NULL) {
+		if (xSemaphoreTake(xDiskMutex, 2000 / portTICK_RATE_MS) != pdTRUE) {
+			return;
+		}
+	}
+
 	sprintf(cmp_str, "Welcome\r\n");
 
 	//writing
@@ -126,6 +135,10 @@ void check_sdc_status(void){
 	}
 	else
 		gi_disk_ok = 0;
+
+	if (xDiskMutex != NULL) {
+		xSemaphoreGive(xDiskMutex);
+	}
 }
 
 void get_params(void){
@@ -412,8 +425,10 @@ void vDisk_Task(void *pvParameters)
 
 	int file_opened, file_created;
 	int valid_dota_file;
+	static int disk_tick_100ms = 0;
+	static int sdc_retry_cnt = 0;
 
-	vTaskDelay(500 / portTICK_RATE_MS);
+	vTaskDelay(200 / portTICK_RATE_MS);
 
 	if (xDiskMutex == NULL) {
 		xDiskMutex = xSemaphoreCreateMutex();
@@ -424,32 +439,36 @@ void vDisk_Task(void *pvParameters)
 	file_created = 0;
 	file_opened = 0;
 
+	/* Run 200ms of timerproc ticks so card inserted status stabilizes before initial mount */
+	for (int i = 0; i < 20; i++) {
+		vTaskDelay(10 / portTICK_RATE_MS);
+		disk_timerproc();
+	}
+
 	check_sdc_status();
-	vTaskDelay(100 / portTICK_RATE_MS);
-
-
-	vTaskDelay(5000 / portTICK_RATE_MS);
 
 	for(;;){
 
-		taskENTER_CRITICAL();
-		gi_wdt_task_ok_stat |= WDT_DISK_OK;
-		taskEXIT_CRITICAL();
-		vTaskDelay(1000 / portTICK_RATE_MS);
+		vTaskDelay(10 / portTICK_RATE_MS);
+		disk_timerproc();
 
-		/* Periodic retry to auto-detect SD Card if not yet mounted or hot-plugged */
-		static int sdc_retry_cnt = 0;
-		if (!gi_disk_ok) {
-			if (++sdc_retry_cnt >= 10) {
-				sdc_retry_cnt = 0;
-				check_sdc_status();
+		if (++disk_tick_100ms >= 100) {
+			disk_tick_100ms = 0;
+			taskENTER_CRITICAL();
+			gi_wdt_task_ok_stat |= WDT_DISK_OK;
+			taskEXIT_CRITICAL();
+
+			/* Periodic retry to auto-detect SD Card if not yet mounted */
+			if (!gi_disk_ok) {
+				if (++sdc_retry_cnt >= 3) {
+					sdc_retry_cnt = 0;
+					check_sdc_status();
+				}
 			}
 		}
 
-		vTaskDelay(100 / portTICK_RATE_MS);
-
-
 		if(XITC_Memory_Disk.signal == 1){
+			if (xDiskMutex != NULL) xSemaphoreTake(xDiskMutex, portMAX_DELAY);
 			// Logging to disk starts here..
 			if(XITC_Memory_Disk.command == eLog){
 				int log_yr = XITC_Memory_Disk.year;
@@ -555,6 +574,9 @@ void vDisk_Task(void *pvParameters)
 
 
 			XITC_Memory_Disk.signal = 0;
+			if (xDiskMutex != NULL) {
+				xSemaphoreGive(xDiskMutex);
+			}
 		}
 
 

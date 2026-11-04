@@ -56,6 +56,7 @@ XITC_Kbd_Log_Def XITC_Kbd_Log;
 extern volatile int dbg_last_key;
 extern volatile int dbg_raw_cols;
 extern volatile uint32_t dbg_key_count;
+extern volatile int dbg_kbd_state;
 
 
 

@@ -162,7 +162,7 @@ static void render_screen(int scr_id, char *line1, char *line2)
 #else
 		snprintf(line1, 17, "  KSNDMC - TRG  ");
 #endif
-		snprintf(line2, 17, "    ID:%-4.4s     ", sid);
+		snprintf(line2, 17, "ID:%-4.4s K:%d S:%dC%d", sid, dbg_last_key, dbg_kbd_state, dbg_raw_cols);
 		break;
 	}
 
@@ -233,7 +233,7 @@ static void render_screen(int scr_id, char *line1, char *line2)
 
 	case SCR_SOLAR:
 		snprintf(line1, 17, "  Solar Status  ");
-		snprintf(line2, 17, "%-16.16s", (solar_status == 'C' || solar_status == 'Y') ? "STATUS: CHARGING" : "STATUS: STANDBY ");
+		snprintf(line2, 17, "%-16.16s", solar_status ? "STATUS: CHARGING" : "STATUS: STANDBY ");
 		break;
 
 	/* Group 2: System Diagnostics & GPS */
@@ -774,13 +774,24 @@ static void wake_display(void)
 	gUi_Active = 1;
 	lcd_active = 1;
 
-	/* 1. Turn on LCD display pixels */
+	/* 1. Request LPC845 to restore 5V rail to LCD */
+	sensor_send_cmd_direct("$n4;\012");
+	usb_lcd_pwr = 'U';
+	vTaskDelay(120 / portTICK_RATE_MS); /* Allow 5V rail & HD44780 power-on reset to settle */
+
+	/* 2. Re-initialize HD44780 in 4-bit mode */
+	wait_for_lcd_idle();
+	XITC_Ui_Lcd.lcd_cmd = eLcd_Init;
+	XITC_Ui_Lcd.sig = 1;
+	wait_for_lcd_idle();
+
+	/* 3. Turn on LCD display pixels */
 	wait_for_lcd_idle();
 	XITC_Ui_Lcd.lcd_cmd = eLcd_On;
 	XITC_Ui_Lcd.sig = 1;
 	wait_for_lcd_idle();
 
-	/* 2. Directly activate backlight hardware pin */
+	/* 4. Directly activate backlight hardware pin */
 	lcd_backlight_on();
 }
 
@@ -798,8 +809,9 @@ static void sleep_display(void)
 	XITC_Ui_Lcd.sig = 1;
 	wait_for_lcd_idle();
 
-	/* Maintain 5V rail to HD44780 controller to prevent 4-bit nibble desync.
-	 * 5V rail is cut only during system_enter_sleep() deep power-down. */
+	/* 3. Request LPC845 to cut 5V rail to LCD */
+	sensor_send_cmd_direct("$f4;\012");
+	usb_lcd_pwr = 'u';
 }
 
 static void toggle_display(void)
@@ -960,10 +972,11 @@ void vUi_Task(void *pvParameters)
 				switch (key) {
 				case eUp_Key:
 				case eLeft_Key:
-					/* Previous screen in carousel */
+					/* Previous screen in carousel.
+					 * If at SCR_STATION (0), wrap only within Sensor group (to SCR_SOLAR = 7),
+					 * NEVER wrapping backwards into action screens (14-20) like Wipe Data or Sleep! */
 					if (current_screen == SCR_STATION) {
-						/* When at Station ID, UP wraps to the end of Diagnostics, avoiding dangerous Actions */
-						current_screen = SCR_VERSION;
+						current_screen = SCR_SOLAR;
 					} else {
 						do {
 							current_screen = (current_screen + SCR_TOTAL_SCREENS - 1) % SCR_TOTAL_SCREENS;
@@ -982,9 +995,11 @@ void vUi_Task(void *pvParameters)
 					break;
 
 				case eMenu_Key:
-					/* Quick jump between sections: Sensors (0) -> Diagnostics (8) -> Actions (14) */
-					if (current_screen < SCR_SDC_STATUS) {
-						current_screen = SCR_SDC_STATUS;
+					/* Quick jump between Station/Sensors (0), Battery/Solar (6), and Diagnostics (8) */
+					if (current_screen < SCR_BATTERY) {
+						current_screen = SCR_BATTERY;
+					} else if (current_screen < SCR_SIM_SIGNAL) {
+						current_screen = SCR_SIM_SIGNAL;
 					} else if (current_screen < SCR_ACT_SEND_HTTP) {
 						current_screen = SCR_ACT_SEND_HTTP;
 					} else {
@@ -1080,7 +1095,7 @@ void vUi_Task(void *pvParameters)
 					break;
 
 				case eDisp_Key:
-					/* Screen is active; pressing DSP blanks the display */
+					/* Screen is active; pressing DSP puts display to sleep */
 					sleep_display();
 					break;
 
@@ -1105,7 +1120,7 @@ void vUi_Task(void *pvParameters)
 
 			inactivity_seconds += secs_to_advance;
 			if (inactivity_seconds >= 60 && gUi_Active) {
-				/* Operator inactivity timeout: blank the LCD */
+				/* Operator inactivity timeout: turn off LCD */
 				inactivity_seconds = 0;
 				gUi_Active = 0;
 				if (lcd_active) {
