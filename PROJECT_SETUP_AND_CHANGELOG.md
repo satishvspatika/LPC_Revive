@@ -633,6 +633,38 @@ To effortlessly synchronize changes between your development laptop and office c
 
 ---
 
+### 33. UI Carousel Navigation, Integer LCD Formatting, and 30ms Keypad Debounce (v1.0.23)
+
+- **Release Date**: November 4, 2026
+- **Firmware Version**: `TWS6-1.0.23`
+- **Key Enhancements & Bug Fixes**:
+  1. **Fixed UI Carousel Navigation & Zero Float Lockup (`ui.c`)**:
+     - *Issue 1 (Direct Jump to Date & Time on Boot)*: `vUi_Task` displayed the splash screen for 600 ms while `vKbd_Task` was running. A key event captured during power-rail stabilization remained latched in `XITC_Kbd_Log.sig_key`. When `vUi_Task` entered `for(;;)`, it immediately treated this as a keypress on `SCR_STATION` (0) and advanced directly to `SCR_DATE_TIME` (1) before the operator touched any button.
+     - *Issue 2 (Carousel Lockup on Wind Speed)*: When navigating to `SCR_WIND` (4), `render_screen()` unconditionally called `snprintf()` with two `%f` floating-point format specifiers (`Inst:%-4.1f Avg:%-4.1f`). In GNU Arm Embedded newlib-nano (`libc_nano.a`) linked without `-u _printf_float`, float formatting allocates large temporary buffers on the 320-word FreeRTOS task stack and encounters an unsupported float conversion, causing task lockup or stack corruption.
+     - *Fix*:
+       - Flushed `XITC_Kbd_Log.sig_key = 0; XITC_Kbd_Log.key_value = 0;` immediately after the 600 ms splash delay, guaranteeing the station cleanly boots into `SCR_STATION` (Station ID) every time.
+       - Converted all float formatting in `render_screen()` (`SCR_TEMP_HUM`, `SCR_WIND`, `SCR_BATTERY`) to lightweight, integer-based division and modulo math (`%d.%01d`).
+       - `SCR_WIND` line 2 now renders as `"I:%2d.%1d A:%2d.%1dkmh"` (exactly 16 characters), fitting the HD44780 LCD with zero stack overhead and zero float crash risk.
+       - Cleaned up `SCR_STATION` Line 2 from debug strings (`K:3 C:7`) back to clean production layout: `"    ID:1922     "`.
+       - Carousel navigation now smoothly advances across all 20 active screens: Station ID (0) -> Date & Time (1) -> Temp & Hum (3) -> Wind Speed (4) -> Wind Dir (5) -> Battery (6) -> Solar (7) -> SDC (8) -> Actions (9–13) -> Errors (14) -> Version (15) -> SIM/Signal (16) -> Last Log (17) -> Transmit HTTP (18) -> GPS (19) -> Send SMS (20) -> Station ID (0).
+  2. **Fast Microsecond GPIO Matrix Scan & 30ms Stable Debounce (`kbd.c`)**:
+     - *Issue*: In `v1.0.22`, `Output_Row()` held rows LOW across FreeRTOS `vTaskDelay(1 / portTICK_RATE_MS)` context switches, and `Kbd_Scan()` had Row 1 Column 2 disabled, preventing the physical Right Arrow from responding. The 0-tick leading-edge debounce with 2-tick release check also suffered from contact bounce flutter, requiring multiple presses.
+     - *Fix*:
+       - Re-implemented the standard 3x3 matrix formula (`iRow_No * MAX_ROWS + iCol_No`) with 500-iteration (~15 µs at 100 MHz) fast GPIO line settling delays. No task switching occurs while a row is driven LOW; all rows are restored to logic 1 (`FIOSET`) immediately after reading.
+       - All 9 keypad keys are decoded with 100% matrix integrity: Row 0 (`P3.26`: Menu=1, Up=2, Calib=3), Row 1 (`P3.25`: Left=4, Set=5, Right=6), Row 2 (`P1.21`: Back=7, Down=8, Disp=9).
+       - Added 200 ms startup settling delay in `vKbd_Task` before matrix scanning.
+       - Implemented FreeRTOS 3-tick (30 ms) stable hold debounce confirmation (`iDebounce_Count = 3`) and clean release reset (`iOld_Key = 0`), completely eliminating boot transients and contact flutter.
+  3. **Continuous Boot Network Registration Polling & Power Management (`gprs.c`)**:
+     - *Issue*: Telemetry boot sync previously ran once before the main loop. If cellular network registration was not completed within the first few seconds of boot, `gi_data_ready_for_report` remained 0, leaving the SIM7600 running with `NETLIGHT` blinking continuously for up to 15 minutes without sending data or logging to SD card.
+     - *Fix*:
+       - Added a dedicated boot monitor inside `vGprs_Task`: periodically checks registration every 3 seconds after boot.
+       - The moment registration is achieved (`gi_sim_reg == 1`), `gi_data_ready_for_report = 1; gi_manual_http_trigger = 1;` is triggered immediately, establishing the HTTP connection, transmitting live telemetry to KSNDMC (`117.216.42.181:80`), and logging full diagnostics to `HTTP_LOG.TXT` on the SD card.
+       - Once transmission succeeds, `vGprs_Task` shuts down the SIM7600 with `AT+CPOF` and clears `gprs_modem_active = 0`, immediately turning off the `NETLIGHT` LED to conserve battery power.
+       - If no network registration can be obtained after 90 seconds (e.g. no SIM inserted or basement testing), the modem is automatically shut down with `AT+CPOF` to save power.
+  4. **Bumped Firmware Version**: Updated to `TWS6-1.0.23`.
+
+---
+
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |
@@ -680,4 +712,7 @@ To effortlessly synchronize changes between your development laptop and office c
 | **Multi-sample consecutive debounce on make transitions** | If mechanical switch contact bounce causes a 1-cycle flutter (0 reading), consecutive-sample debounce resets `iOld_Key` to 0 and drops the press, forcing 2-3 taps. | Use leading-edge trigger (`iNew_Key != 0 && iOld_Key == 0`) for instant single-tap registration, with a 2-cycle release debounce filter (`release_count >= 2`) on key release. |
 | **Leaving SIM7600 powered continuously outside telemetry slots** | SIM7600 draws 25-50 mA with NETLIGHT blinking. If modem power down (`AT+CPOF`) only runs at 15-min slot completion, modem runs indefinitely on boot/wake. | Issue `AT+CPOF` to shut down modem RF/baseband on 60s UI inactivity sleep, extinguishing NETLIGHT and conserving battery. |
 | **Enforcing 62-second slot guard on operator on-demand HTTP** | 62-second slot guard is strictly for automated 15-minute slot intervals. Applying it to manual UI actions freezes the interface for up to a minute. | Set `gi_manual_http_trigger = 1` for UI actions and bypass the 62-second slot hold in `vGprs_Task`. |
+| **Using `%f` in `snprintf` with newlib-nano without `-u _printf_float`** | In newlib-nano (`--specs=nano.specs`), `%f` float formatting allocates hundreds of bytes on the stack and locks or corrupts FreeRTOS task stacks (`vUi_Task` has only 320 words). | Always use integer-based division and modulo (`%d.%01d`) for formatting floats on 16x2 LCD screens. |
+| **Entering UI task loop without flushing keypad queue after splash screen** | Contact chatter or rail voltage ramp during boot can latch a false key into `sig_key`. When `vUi_Task` enters its loop, it executes this key on Screen 0, instantly jumping to Screen 1 (Date & Time). | Flush `XITC_Kbd_Log.sig_key = 0; XITC_Kbd_Log.key_value = 0;` immediately after the splash screen delay before entering `for(;;)`. |
+| **Using `vTaskDelay` while holding matrix rows LOW during keypad scan** | Context switches while a row pin is LOW cause line crosstalk, float glitches, and pin state contention with other tasks. | Use calibrated microsecond settling loops (~15 µs at 100 MHz) and immediately restore all rows to logic HIGH (`FIOSET`) after reading. |
 

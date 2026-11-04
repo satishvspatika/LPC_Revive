@@ -153,10 +153,10 @@ int Read_Col_Pressed(void) {
 
 	dbg_raw_cols = (int)((port0 >> 20) & 0x07);
 
-	if ((port0 & KBD_COL1_MASK) == 0)
-		iCol_Number = 2;
-	else if ((port0 & KBD_COL0_MASK) == 0)
+	if ((port0 & KBD_COL0_MASK) == 0)
 		iCol_Number = 1;
+	else if ((port0 & KBD_COL1_MASK) == 0)
+		iCol_Number = 2;
 	else if ((port0 & KBD_COL2_MASK) == 0)
 		iCol_Number = 3;
 
@@ -169,75 +169,38 @@ int Read_Col_Pressed(void) {
 
 /*-------------------------------------------------------------------------------------------------------------------*
 * 	FUNCTION NAME : Kbd_Scan
- * 	DESCRIPTION : This function scans the keyboard matrix to get exact key value with idle baseline filtering.
+ * 	DESCRIPTION : This function scans the keyboard matrix to get exact key value.
 * 	VERSION : 1.5
 * 	ARGUMENTS : None
 * 	RETURN VALUES : iKey_Value
 *-------------------------------------------------------------------------------------------------------------------*/
 
 int Kbd_Scan(void) {
-	uint32_t port0;
+	int iRow_No;
+	int iCol_No;
+	int iKey_Value = 0;
 
-	/* --- Row 0 (P3.26): Menu (Col 0), Up (Col 1), Right Arrow (Col 2) --- */
-	Output_Row(0);
-	vTaskDelay(1 / portTICK_RATE_MS);
-	port0 = LPC_GPIO0->FIOPIN;
+	// Ensure all rows are idle HIGH before scanning
 	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
 	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
 
-	if ((port0 & KBD_COL1_MASK) == 0) {
-		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
-		return eUp_Key;     /* Up Arrow: Center Col (P0.21) -> Key 2 */
-	}
-	if ((port0 & KBD_COL0_MASK) == 0) {
-		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
-		return eMenu_Key;   /* Menu: Left Col (P0.22) -> Key 1 */
-	}
-	if ((port0 & KBD_COL2_MASK) == 0) {
-		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
-		return eRight_Key;  /* Right Arrow: Right Col (P0.20) -> Key 6 */
+	for (iRow_No = 0; iRow_No < MAX_ROWS; iRow_No++) {
+		Output_Row(iRow_No);
+		/* Hardware settling delay (~15us at 100MHz) for line capacitance */
+		for (volatile int d = 0; d < 500; d++);
+		iCol_No = Read_Col_Pressed();
+
+		if (iCol_No != 0) {
+			iKey_Value = iRow_No * MAX_ROWS + iCol_No;
+			break;
+		}
 	}
 
-	/* --- Row 1 (P3.25): Left Arrow (Col 0), EN/Set (Col 1) --- */
-	Output_Row(1);
-	vTaskDelay(1 / portTICK_RATE_MS);
-	port0 = LPC_GPIO0->FIOPIN;
+	// Ensure all rows remain idle HIGH after scan completes
 	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
 	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
 
-	if ((port0 & KBD_COL1_MASK) == 0) {
-		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
-		return eSet_Key;    /* EN / Set: Center Col (P0.21) -> Key 5 */
-	}
-	if ((port0 & KBD_COL0_MASK) == 0) {
-		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
-		return eLeft_Key;   /* Left Arrow: Left Col (P0.22) -> Key 4 */
-	}
-	/* NOTE: Col 2 (P0.20) on Row 1 (P3.25) is filtered because it reads 0 at idle baseline */
-
-	/* --- Row 2 (P1.21): Back (Col 0), Down (Col 1), Disp (Col 2) --- */
-	Output_Row(2);
-	vTaskDelay(1 / portTICK_RATE_MS);
-	port0 = LPC_GPIO0->FIOPIN;
-	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
-	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
-
-	if ((port0 & KBD_COL1_MASK) == 0) {
-		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
-		return eDown_Key;   /* Down Arrow: Center Col (P0.21) -> Key 8 */
-	}
-	if ((port0 & KBD_COL0_MASK) == 0) {
-		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
-		return eBack_Key;   /* Back / Home: Left Col (P0.22) -> Key 7 */
-	}
-	if ((port0 & KBD_COL2_MASK) == 0) {
-		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
-		return eDisp_Key;   /* Disp / Wake: Right Col (P0.20) -> Key 9 */
-	}
-
-	/* Idle: No key pressed on any row */
-	dbg_raw_cols = (int)((LPC_GPIO0->FIOPIN >> 20) & 0x07);
-	return eNo_Key;
+	return iKey_Value;
 }
 
 /*-------------------------------------------------------------------------------------------------------------------*
@@ -270,13 +233,16 @@ void vKbd_Task(void *pvParameters)
 {
 	int iOld_Key = 0;
 	int iNew_Key = 0;
-	int release_count = 0;
+	int iDebounce_Count = 0;
 	static int pins_released = 0;
 
 	XITC_Kbd_Log.sig_key = 0;
 	XITC_Kbd_Log.key_value = 0;
 	init_kbd_pins();
 	kbd_task_started = 1;
+
+	/* 200ms power-on rail settling delay before first scan */
+	vTaskDelay(200 / portTICK_RATE_MS);
 
 	for (;;) {
 		vTaskDelay(10 / portTICK_RATE_MS);
@@ -291,26 +257,26 @@ void vKbd_Task(void *pvParameters)
 		} else if (pins_released) {
 			init_kbd_pins();
 			pins_released = 0;
+			vTaskDelay(50 / portTICK_RATE_MS);
 		}
 
 		iNew_Key = Kbd_Scan(); // Scan matrix for pressed key
 		if (iNew_Key != 0) {
-			release_count = 0;
-			if (iOld_Key == 0) {
-				/* Immediate first-strike responsiveness on leading edge */
-				dbg_last_key = iNew_Key;
-				dbg_key_count++;
-				XITC_Kbd_Log.key_value = iNew_Key;
-				XITC_Kbd_Log.sig_key = 1;
+			if (iNew_Key != iOld_Key) {
 				iOld_Key = iNew_Key;
+				iDebounce_Count = 3; /* 30ms stable hold confirmation */
+			} else if (iDebounce_Count > 0) {
+				iDebounce_Count--;
+				if (iDebounce_Count == 0) {
+					XITC_Kbd_Log.key_value = iNew_Key;
+					XITC_Kbd_Log.sig_key = 1;
+					dbg_last_key = iNew_Key;
+					dbg_key_count++;
+				}
 			}
 		} else {
-			/* Debounce key release across 2 scan cycles (~25 ms) to prevent release flutter */
-			if (release_count < 2) {
-				release_count++;
-			} else {
-				iOld_Key = 0;
-			}
+			iOld_Key = 0;
+			iDebounce_Count = 0;
 		}
 	}
 }

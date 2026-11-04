@@ -2896,13 +2896,8 @@ void vGprs_Task( void *pvParameters){
 	vTaskDelay(200 / portTICK_RATE_MS);
 
 	int bg_gps_ticks = 0;
-
-	/* Initial boot telemetry sync: queue immediate transmission once registered */
-	if ((gi_sim_state == 1) && (gi_sim_reg == 1)) {
-		sd_log_http("NET: Initial boot telemetry sync queued.");
-		gi_manual_http_trigger = 1;
-		gi_data_ready_for_report = 1;
-	}
+	int boot_sync_done = 0;
+	int boot_wait_ticks = 0;
 
 	for(;;){
 
@@ -2910,6 +2905,35 @@ void vGprs_Task( void *pvParameters){
 		gi_wdt_task_ok_stat |= WDT_GPRS_OK;
 		taskEXIT_CRITICAL();
 		vTaskDelay(1000 / portTICK_RATE_MS);
+
+		/* Initial Boot Telemetry & Modem Power Management:
+		 * Poll network registration every 3 seconds after power-on.
+		 * As soon as registered, immediately transmit initial telemetry packet.
+		 * If unable to register after 90 seconds (no SIM or no network),
+		 * shut down the modem to save battery and turn off NETLIGHT. */
+		if (!boot_sync_done) {
+			boot_wait_ticks++;
+			if ((boot_wait_ticks % 3) == 0 && gi_sim_reg == 0 && gi_sim_state == 1) {
+				check_sim_registration();
+				if (gi_sim_reg == 1) {
+					get_signal_level();
+					get_apn();
+				}
+			}
+
+			if (gi_sim_state == 1 && gi_sim_reg == 1) {
+				boot_sync_done = 1;
+				sd_log_http("NET: SIM registered on network. Initial boot telemetry sync triggered.");
+				gi_manual_http_trigger = 1;
+				gi_data_ready_for_report = 1;
+			} else if (boot_wait_ticks >= 90) {
+				boot_sync_done = 1;
+				sd_log_http("NET: Boot registration timeout (90s). Shutting down modem to conserve battery.");
+				Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
+				gprs_modem_active = 0;
+				sd_log_http("NET: Modem powered down. NETLIGHT LED off.");
+			}
+		}
 
 		// Background periodic satellite lock check if coordinates not yet acquired
 		if (Global_Data_Params.gps_latitude <= 0.0f) {

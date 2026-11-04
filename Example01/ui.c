@@ -9,6 +9,7 @@
 #include "memory.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "ff.h"
 
 /* Global communication structs required by other modules */
@@ -161,7 +162,7 @@ static void render_screen(int scr_id, char *line1, char *line2)
 #else
 		snprintf(line1, 17, "  KSNDMC - TRG  ");
 #endif
-		snprintf(line2, 17, "ID:%-4.4s K:%d C:%d", sid, dbg_last_key, dbg_raw_cols);
+		snprintf(line2, 17, "    ID:%-4.4s     ", sid);
 		break;
 	}
 
@@ -185,29 +186,50 @@ static void render_screen(int scr_id, char *line1, char *line2)
 		snprintf(line2, 17, "    %3d.%1d mm    ", u_rainfall / 2, ((u_rainfall % 2) ? 5 : 0));
 		break;
 
-	case SCR_TEMP_HUM:
+	case SCR_TEMP_HUM: {
 		snprintf(line1, 17, " Temp & Humidity");
-		if (Global_WS_Data.temperature > -50 && Global_WS_Data.temperature < 80) {
-			snprintf(line2, 17, " %4.1fC   %4.1f%% ", Global_WS_Data.temperature, Global_WS_Data.humidity);
+		if (Global_WS_Data.temperature > -50.0f && Global_WS_Data.temperature < 80.0f) {
+			int t_val = (int)(Global_WS_Data.temperature * 10.0f);
+			int t_int = t_val / 10;
+			int t_dec = abs(t_val % 10);
+			int h_val = (int)(Global_WS_Data.humidity * 10.0f);
+			int h_int = h_val / 10;
+			int h_dec = abs(h_val % 10);
+			snprintf(line2, 17, "%3d.%1dC   %3d.%1d%%", t_int, t_dec, h_int, h_dec);
 		} else {
 			snprintf(line2, 17, "  Not Available ");
 		}
 		break;
+	}
 
-	case SCR_WIND:
+	case SCR_WIND: {
+		int i_int = (int)Global_WS_Data.inst_ws;
+		int i_dec = abs((int)(Global_WS_Data.inst_ws * 10.0f)) % 10;
+		int a_int = (int)Global_WS_Data.avg_ws;
+		int a_dec = abs((int)(Global_WS_Data.avg_ws * 10.0f)) % 10;
+		if (i_int < 0) i_int = 0;
+		if (a_int < 0) a_int = 0;
 		snprintf(line1, 17, " Wind Speed km/h");
-		snprintf(line2, 17, "Inst:%-4.1f Avg:%-4.1f", Global_WS_Data.inst_ws, Global_WS_Data.avg_ws);
+		snprintf(line2, 17, "I:%2d.%1d A:%2d.%1dkmh", i_int, i_dec, a_int, a_dec);
 		break;
+	}
 
 	case SCR_WIND_DIR:
 		snprintf(line1, 17, " Wind Direction ");
 		snprintf(line2, 17, "    %-3d Deg     ", Global_WS_Data.wind_dir);
 		break;
 
-	case SCR_BATTERY:
+	case SCR_BATTERY: {
+		int b1_val = (int)(gf_bat_volt1 * 10.0f);
+		int b1_int = b1_val / 10;
+		int b1_dec = abs(b1_val % 10);
+		int b2_val = (int)(gf_bat_volt2 * 10.0f);
+		int b2_int = b2_val / 10;
+		int b2_dec = abs(b2_val % 10);
 		snprintf(line1, 17, " Battery Status ");
-		snprintf(line2, 17, "B1:%4.1fV B2:%4.1fV", gf_bat_volt1, gf_bat_volt2);
+		snprintf(line2, 17, "B1:%2d.%1d B2:%2d.%1dV", b1_int, b1_dec, b2_int, b2_dec);
 		break;
+	}
 
 	case SCR_SOLAR:
 		snprintf(line1, 17, "  Solar Status  ");
@@ -879,6 +901,10 @@ void vUi_Task(void *pvParameters)
 	lcd_backlight_on();
 	ui_send_lcd(WELCOME_STR1, " INITIALIZING.. ");
 	vTaskDelay(600 / portTICK_RATE_MS);
+
+	/* Flush any keypad events captured during startup rail ramp */
+	XITC_Kbd_Log.sig_key = 0;
+	XITC_Kbd_Log.key_value = 0;
 
 	/* Transition cleanly from splash to Station ID home screen */
 	current_screen = SCR_STATION;
