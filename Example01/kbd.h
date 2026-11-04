@@ -1,9 +1,9 @@
 #define KBD_ROW0_PORT	3
-#define KBD_ROW0_PINNO	25
+#define KBD_ROW0_PINNO	26
 #define KBD_ROW0_MASK	(1<<KBD_ROW0_PINNO)
 
 #define KBD_ROW1_PORT	3
-#define KBD_ROW1_PINNO	26
+#define KBD_ROW1_PINNO	25
 #define KBD_ROW1_MASK	(1<<KBD_ROW1_PINNO)
 
 #define KBD_ROW2_PORT	1

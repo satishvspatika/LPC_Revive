@@ -607,6 +607,32 @@ To effortlessly synchronize changes between your development laptop and office c
 
 ---
 
+### 32. Keypad Matrix Hardware Baseline Filtering & Auto Boot Telemetry Sync (v1.0.22)
+
+- **Release Date**: November 4, 2026
+- **Firmware Version**: `TWS6-1.0.22`
+- **Key Enhancements & Bug Fixes**:
+  1. **Hardware Matrix Baseline Filtering & Keypad Unsticking (`kbd.c`)**:
+     - *Issue*: On Row 1 (`P3.25`), Column 2 (`P0.20`) reads logic 0 at idle baseline due to membrane contact characteristics. Because `Read_Col_Pressed()` evaluated `if ((port0 & KBD_COL2_MASK) == 0)` first, `iCol_Number = 3` was returned on every single scan cycle, completely masking Column 1 (EN / Set, `C:4`) and Column 0 (Left Arrow, `C:2`). `Kbd_Scan()` never returned 0 (`eNo_Key`), preventing `iOld_Key` from ever resetting and permanently deadlocking the keypad task.
+     - *Fix*:
+       - Restored `KBD_ROW0_PINNO = 26` (P3.26: Top Row), `KBD_ROW1_PINNO = 25` (P3.25: Middle Row), and `KBD_ROW2_PINNO = 21` (P1.21: Bottom Row).
+       - Explicitly filtered Column 2 (`P0.20`) on Row 1 (`P3.25`), allowing Column 1 (`eSet_Key` = 5, EN / Set) and Column 0 (`eLeft_Key` = 4, Left Arrow) to be detected instantly.
+       - Mapped physical Right Arrow on Row 0 (`P3.26`) Column 2 (`P0.20`) directly to `eRight_Key` (6), completely eliminating the false `eCalib_Key` (3) trigger that previously popped up `"No Rain Gauge"`.
+       - All 8 physical buttons are now 100% operational: Up (`K:2`), Down (`K:8`), Left (`K:4`), Right (`K:6`), EN (`K:5`), Menu (`K:1`), Back (`K:7`), Disp (`K:9`).
+       - `Kbd_Scan()` cleanly returns `eNo_Key` (0) when idle, resetting `iOld_Key = 0` and providing instantaneous, flutter-free leading-edge key responsiveness.
+  2. **Automated Boot Telemetry Transmission (`gprs.c`)**:
+     - *Issue*: On startup, `gi_data_ready_for_report` initialized to 0 and was only set when an LPC845 15-minute slot arrived. Bench testing outside slot boundaries left the SIM7600 running indefinitely with `NETLIGHT` blinking for up to 15 minutes, never sending data to the server or dumping logs to the SD card.
+     - *Fix*: Once cellular network registration is confirmed on boot (`gi_sim_state == 1 && gi_sim_reg == 1`), `vGprs_Task` immediately queues an automated HTTP telemetry sync (`gi_manual_http_trigger = 1; gi_data_ready_for_report = 1;`). Live station data and any pending flash backlogs are transmitted immediately to KSNDMC (`117.216.42.181:80`), with complete diagnostic traces written to `HTTP_LOG.TXT` on the SD card.
+  3. **Clean Cellular Power-Down & Sleep Wakeup Lifecycle (`gprs.c`, `ui.c`)**:
+     - *Issue*: `vUi_Task` sent `AT+CPOF` directly across UART2 upon 60-second inactivity timeout. This caused UART TX register collisions with `vGprs_Task`, failed to properly shut down the modem, and left `vGprs_Task` unable to communicate with the modem on subsequent 15-minute slots because PWRKEY was never pulsed.
+     - *Fix*:
+       - Removed all direct `AT+CPOF` calls from `vUi_Task`; modem power is now managed exclusively and synchronously by `vGprs_Task`.
+       - Following telemetry transmission, `vGprs_Task` cleanly closes the bearer (`AT+CIPCLOSE=0`, `AT+NETCLOSE`), issues `AT+CPOF`, and clears `gprs_modem_active = 0`, extinguishing `NETLIGHT` completely and saving battery power.
+       - Whenever a 15-minute slot (or manual UI request) triggers, `vGprs_Task` detects `!gprs_modem_active`, pulses `PWRKEY` via `power_on_sim_module()`, confirms AT readiness, checks CPIN, re-verifies registration, and restores the APN before establishing the socket.
+  4. **Bumped Firmware Version**: Updated to `TWS6-1.0.22`.
+
+---
+
 ## 7. Anti-Patterns & Failed Approaches (DO NOT REPEAT)
 
 | Mistake / Failed Approach | Why It Failed | What Must Be Done Instead |

@@ -1081,11 +1081,6 @@ void vUi_Task(void *pvParameters)
 				if (lcd_active) {
 					sleep_display();
 				}
-				/* Shut down SIM7600 RF & baseband to stop NETLIGHT and save battery */
-				if (!gi_data_ready_for_report && gprs_modem_active) {
-					gprs_send_cmd_direct("AT+CPOF\r\n");
-					gprs_modem_active = 0;
-				}
 			}
 
 			if (xPresent_Date_Time.year < 100 && xPresent_Date_Time.year > 0) {

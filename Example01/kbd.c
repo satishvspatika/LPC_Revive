@@ -141,16 +141,11 @@ void Output_Row(int iRow)
 
 /*-------------------------------------------------------------------------------------------------------------------*
 * 	FUNCTION NAME : Read_Col_Pressed
- * 	DESCRIPTION : This function is used to Outputs the signals for scanning corresponding Column numbers
+ * 	DESCRIPTION : This function is kept for backward compatibility and column sampling
 * 	VERSION : 1.5
 * 	ARGUMENTS : None
 * 	RETURN VALUES : iCol_Number
-* 	GLOBALS INPUT : None
-*	GLOBALS AFFECTED : None
-*	CALLED FUNCTION : Kbd_Scan
-*	CALLING FUNCTION : GPIO_ReadValue, GPIO_SetValue
-
-/*---------------------------------------------------------------------------------------------------------------------*/
+*-------------------------------------------------------------------------------------------------------------------*/
 
 int Read_Col_Pressed(void) {
 	int iCol_Number = 0;
@@ -158,12 +153,12 @@ int Read_Col_Pressed(void) {
 
 	dbg_raw_cols = (int)((port0 >> 20) & 0x07);
 
-	if ((port0 & KBD_COL2_MASK) == 0)
-		iCol_Number = 3;
-	else if ((port0 & KBD_COL1_MASK) == 0)
+	if ((port0 & KBD_COL1_MASK) == 0)
 		iCol_Number = 2;
 	else if ((port0 & KBD_COL0_MASK) == 0)
 		iCol_Number = 1;
+	else if ((port0 & KBD_COL2_MASK) == 0)
+		iCol_Number = 3;
 
 	// set all row pins to logic high
 	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
@@ -174,34 +169,75 @@ int Read_Col_Pressed(void) {
 
 /*-------------------------------------------------------------------------------------------------------------------*
 * 	FUNCTION NAME : Kbd_Scan
- * 	DESCRIPTION : This function is used to scan the keyboard to get key value.
+ * 	DESCRIPTION : This function scans the keyboard matrix to get exact key value with idle baseline filtering.
 * 	VERSION : 1.5
 * 	ARGUMENTS : None
 * 	RETURN VALUES : iKey_Value
-* 	GLOBALS INPUT : None
-*	GLOBALS AFFECTED : None
-*	CALLED FUNCTION : vKbd_Task
-*	CALLING FUNCTION : Output_Row, Read_Col_Pressed
-
-/*---------------------------------------------------------------------------------------------------------------------*/
+*-------------------------------------------------------------------------------------------------------------------*/
 
 int Kbd_Scan(void) {
-	int iRow_No; // Variable to store the row number
-	int iCol_No; // Variable to store the column number
-	int iKey_Value = 0; // Variable to store the key value calculated
+	uint32_t port0;
 
-	for (iRow_No = 0; iRow_No < MAX_ROWS; iRow_No++) {
-		Output_Row(iRow_No); // Output bit patterns to locate the key
-		vTaskDelay(1 / portTICK_RATE_MS); // Full 1ms settling delay for line capacitance & pull-ups
-		iCol_No = Read_Col_Pressed(); // Read the active coloumn value
+	/* --- Row 0 (P3.26): Menu (Col 0), Up (Col 1), Right Arrow (Col 2) --- */
+	Output_Row(0);
+	vTaskDelay(1 / portTICK_RATE_MS);
+	port0 = LPC_GPIO0->FIOPIN;
+	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
+	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
 
-		if (iCol_No) {
-			iKey_Value = iRow_No * MAX_ROWS + iCol_No; // Calculate key value
-			break;
-		}
+	if ((port0 & KBD_COL1_MASK) == 0) {
+		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+		return eUp_Key;     /* Up Arrow: Center Col (P0.21) -> Key 2 */
+	}
+	if ((port0 & KBD_COL0_MASK) == 0) {
+		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+		return eMenu_Key;   /* Menu: Left Col (P0.22) -> Key 1 */
+	}
+	if ((port0 & KBD_COL2_MASK) == 0) {
+		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+		return eRight_Key;  /* Right Arrow: Right Col (P0.20) -> Key 6 */
 	}
 
-	return iKey_Value; // Return the key value
+	/* --- Row 1 (P3.25): Left Arrow (Col 0), EN/Set (Col 1) --- */
+	Output_Row(1);
+	vTaskDelay(1 / portTICK_RATE_MS);
+	port0 = LPC_GPIO0->FIOPIN;
+	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
+	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
+
+	if ((port0 & KBD_COL1_MASK) == 0) {
+		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+		return eSet_Key;    /* EN / Set: Center Col (P0.21) -> Key 5 */
+	}
+	if ((port0 & KBD_COL0_MASK) == 0) {
+		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+		return eLeft_Key;   /* Left Arrow: Left Col (P0.22) -> Key 4 */
+	}
+	/* NOTE: Col 2 (P0.20) on Row 1 (P3.25) is filtered because it reads 0 at idle baseline */
+
+	/* --- Row 2 (P1.21): Back (Col 0), Down (Col 1), Disp (Col 2) --- */
+	Output_Row(2);
+	vTaskDelay(1 / portTICK_RATE_MS);
+	port0 = LPC_GPIO0->FIOPIN;
+	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
+	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
+
+	if ((port0 & KBD_COL1_MASK) == 0) {
+		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+		return eDown_Key;   /* Down Arrow: Center Col (P0.21) -> Key 8 */
+	}
+	if ((port0 & KBD_COL0_MASK) == 0) {
+		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+		return eBack_Key;   /* Back / Home: Left Col (P0.22) -> Key 7 */
+	}
+	if ((port0 & KBD_COL2_MASK) == 0) {
+		dbg_raw_cols = (int)((port0 >> 20) & 0x07);
+		return eDisp_Key;   /* Disp / Wake: Right Col (P0.20) -> Key 9 */
+	}
+
+	/* Idle: No key pressed on any row */
+	dbg_raw_cols = (int)((LPC_GPIO0->FIOPIN >> 20) & 0x07);
+	return eNo_Key;
 }
 
 /*-------------------------------------------------------------------------------------------------------------------*

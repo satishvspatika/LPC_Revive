@@ -2897,6 +2897,13 @@ void vGprs_Task( void *pvParameters){
 
 	int bg_gps_ticks = 0;
 
+	/* Initial boot telemetry sync: queue immediate transmission once registered */
+	if ((gi_sim_state == 1) && (gi_sim_reg == 1)) {
+		sd_log_http("NET: Initial boot telemetry sync queued.");
+		gi_manual_http_trigger = 1;
+		gi_data_ready_for_report = 1;
+	}
+
 	for(;;){
 
 		taskENTER_CRITICAL();
@@ -3062,6 +3069,24 @@ void vGprs_Task( void *pvParameters){
 		if(gi_data_ready_for_report == 1){
 			char log_tmp[160];
 			gi_data_ready_for_report = 0;
+
+			/* Wake up SIM7600 cellular engine if sleeping */
+			if (!gprs_modem_active) {
+				sd_log_http("NET: Powering up SIM7600 cellular engine for transmission...");
+				power_on_sim_module();
+				for (int w = 0; w < 5; w++) {
+					vTaskDelay(1000 / portTICK_RATE_MS);
+					taskENTER_CRITICAL();
+					gi_wdt_task_ok_stat |= WDT_GPRS_OK;
+					taskEXIT_CRITICAL();
+				}
+				check_basic_commands();
+				check_sim_cpin();
+				check_sim_registration();
+				get_signal_level();
+				get_apn();
+				gprs_modem_active = 1;
+			}
 
 			sd_log_http("========================================");
 			sd_log_http("=== HTTP TELEMETRY TRANSMISSION START ===");
