@@ -31,6 +31,8 @@ char loc_buff[150];
 
 char *fgets_ret_val, *matching_ptr;
 
+xSemaphoreHandle xDiskMutex = NULL;
+
 
 /*
  * -------------------------------------------------------------------------------------------------
@@ -412,6 +414,10 @@ void vDisk_Task(void *pvParameters)
 	int valid_dota_file;
 
 	vTaskDelay(500 / portTICK_RATE_MS);
+
+	if (xDiskMutex == NULL) {
+		xDiskMutex = xSemaphoreCreateMutex();
+	}
 
 	gi_disk_ok = 0;
 	valid_dota_file = 0;
@@ -996,9 +1002,19 @@ void sd_log_http(const char *msg)
 
 	if (!msg || *msg == '\0') return;
 
+	if (xDiskMutex == NULL) {
+		xDiskMutex = xSemaphoreCreateMutex();
+	}
+	if (xDiskMutex != NULL) {
+		if (xSemaphoreTake(xDiskMutex, 2000 / portTICK_RATE_MS) != pdTRUE) {
+			return; /* Timed out waiting for disk mutex, skip to prevent bus corruption */
+		}
+	}
+
 	if (gi_disk_ok != 1) {
 		check_sdc_status();
 		if (gi_disk_ok != 1) {
+			if (xDiskMutex != NULL) xSemaphoreGive(xDiskMutex);
 			return;
 		}
 	}
@@ -1019,5 +1035,9 @@ void sd_log_http(const char *msg)
 		f_write(&File_Http_Log, msg, strlen(msg), &bw);
 		f_write(&File_Http_Log, "\r\n", 2, &bw);
 		f_close(&File_Http_Log);
+	}
+
+	if (xDiskMutex != NULL) {
+		xSemaphoreGive(xDiskMutex);
 	}
 }

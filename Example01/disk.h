@@ -1,6 +1,11 @@
 #ifndef __DISK_H__
 #define __DISK_H__
 
+#include "FreeRTOS.h"
+#include "semphr.h"
+
+extern xSemaphoreHandle xDiskMutex;
+
 //function prototypes
 void vDisk_Task(void *pvParameters);
 

@@ -2833,6 +2833,7 @@ void vGprs_Task( void *pvParameters){
 		vTaskDelay(1000 / portTICK_RATE_MS);
 	}
 
+	sd_log_http("NET: System power-on. Initializing SIM7600 cellular engine...");
 	check_basic_commands();
 	vTaskDelay(200 / portTICK_RATE_MS);
 
@@ -2843,6 +2844,7 @@ void vGprs_Task( void *pvParameters){
 	vTaskDelay(200 / portTICK_RATE_MS);
 
 	if(gi_sim_state != 1){
+		sd_log_http("NET: SIM1 not ready. Switching to SIM holder 2...");
 		select_sim_1();  //select secondary  sim for simcard holder 2
 		vTaskDelay(2000 / portTICK_RATE_MS);
 
@@ -2869,6 +2871,14 @@ void vGprs_Task( void *pvParameters){
 	else
 		Global_Data_Params.gi_sim_select = 0;
 
+	{
+		char boot_sim_log[120];
+		sprintf(boot_sim_log, "NET: SIM%d selected. CPIN=%s, Signal=%d dBm",
+			(Global_Data_Params.gi_sim_select == 1) ? 2 : 1,
+			(gi_sim_state == 1) ? "READY" : "NOT DETECTED",
+			gi_signal_level);
+		sd_log_http(boot_sim_log);
+	}
 
 	/* Enable Network Time Zone Update (NITZ) before registration */
 	Send_And_Check_Gprs("AT+CTZU=1\r\n", "OK", "ERROR", 1000);
@@ -2880,6 +2890,13 @@ void vGprs_Task( void *pvParameters){
 
 	get_apn();
 	vTaskDelay(200 / portTICK_RATE_MS);
+
+	{
+		char boot_reg_log[120];
+		sprintf(boot_reg_log, "NET: Network Reg=%d, Operator=%s, APN=%s",
+			gi_sim_reg, gc_operator_name, gc_apn_str);
+		sd_log_http(boot_reg_log);
+	}
 
 	/* Trigger cellular network time sync on startup */
 	if (gi_sim_state == 1) {
@@ -2914,30 +2931,29 @@ void vGprs_Task( void *pvParameters){
 		 * shut down the modem to save battery and turn off NETLIGHT.
 		 * If modem was powered down externally (e.g. UI timeout), mark boot sync done. */
 		if (!boot_sync_done) {
-			if (!gprs_modem_active) {
-				boot_sync_done = 1;
-			} else {
-				boot_wait_ticks++;
-				if ((boot_wait_ticks % 3) == 0 && gi_sim_reg == 0 && gi_sim_state == 1) {
-					check_sim_registration();
-					if (gi_sim_reg == 1) {
-						get_signal_level();
-						get_apn();
-					}
+			boot_wait_ticks++;
+			if ((boot_wait_ticks % 3) == 0 && gi_sim_reg == 0 && gi_sim_state == 1) {
+				check_sim_registration();
+				if (gi_sim_reg == 1) {
+					get_signal_level();
+					get_apn();
+					char reg_ok_log[120];
+					sprintf(reg_ok_log, "NET: Registered! Operator=%s, Signal=%d dBm, APN=%s", gc_operator_name, gi_signal_level, gc_apn_str);
+					sd_log_http(reg_ok_log);
 				}
+			}
 
-				if (gi_sim_state == 1 && gi_sim_reg == 1) {
-					boot_sync_done = 1;
-					sd_log_http("NET: SIM registered on network. Initial boot telemetry sync triggered.");
-					gi_manual_http_trigger = 1;
-					gi_data_ready_for_report = 1;
-				} else if (boot_wait_ticks >= 90) {
-					boot_sync_done = 1;
-					sd_log_http("NET: Boot registration timeout (90s). Shutting down modem to conserve battery.");
-					Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
-					gprs_modem_active = 0;
-					sd_log_http("NET: Modem powered down. NETLIGHT LED off.");
-				}
+			if (gi_sim_state == 1 && gi_sim_reg == 1) {
+				boot_sync_done = 1;
+				sd_log_http("NET: SIM registered on network. Initial boot telemetry sync triggered.");
+				gi_manual_http_trigger = 1;
+				gi_data_ready_for_report = 1;
+			} else if (boot_wait_ticks >= 90) {
+				boot_sync_done = 1;
+				sd_log_http("NET: Boot registration timeout (90s). Shutting down modem to conserve battery.");
+				Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
+				gprs_modem_active = 0;
+				sd_log_http("NET: Modem powered down. NETLIGHT LED off.");
 			}
 		}
 

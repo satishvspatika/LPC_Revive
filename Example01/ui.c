@@ -233,7 +233,7 @@ static void render_screen(int scr_id, char *line1, char *line2)
 
 	case SCR_SOLAR:
 		snprintf(line1, 17, "  Solar Status  ");
-		snprintf(line2, 17, "%-16.16s", solar_status ? "STATUS: CHARGING" : "STATUS: STANDBY ");
+		snprintf(line2, 17, "%-16.16s", (solar_status == 'C' || solar_status == 'Y') ? "STATUS: CHARGING" : "STATUS: STANDBY ");
 		break;
 
 	/* Group 2: System Diagnostics & GPS */
@@ -774,24 +774,13 @@ static void wake_display(void)
 	gUi_Active = 1;
 	lcd_active = 1;
 
-	/* 1. Request LPC845 to restore 5V rail to LCD */
-	sensor_send_cmd_direct("$n4;\012");
-	usb_lcd_pwr = 'U';
-	vTaskDelay(120 / portTICK_RATE_MS); /* Allow 5V rail & HD44780 power-on reset to settle */
-
-	/* 2. Re-initialize HD44780 in 4-bit mode */
-	wait_for_lcd_idle();
-	XITC_Ui_Lcd.lcd_cmd = eLcd_Init;
-	XITC_Ui_Lcd.sig = 1;
-	wait_for_lcd_idle();
-
-	/* 3. Turn on LCD display pixels */
+	/* 1. Turn on LCD display pixels */
 	wait_for_lcd_idle();
 	XITC_Ui_Lcd.lcd_cmd = eLcd_On;
 	XITC_Ui_Lcd.sig = 1;
 	wait_for_lcd_idle();
 
-	/* 4. Directly activate backlight hardware pin */
+	/* 2. Directly activate backlight hardware pin */
 	lcd_backlight_on();
 }
 
@@ -809,9 +798,8 @@ static void sleep_display(void)
 	XITC_Ui_Lcd.sig = 1;
 	wait_for_lcd_idle();
 
-	/* 3. Request LPC845 to cut 5V rail to LCD */
-	sensor_send_cmd_direct("$f4;\012");
-	usb_lcd_pwr = 'u';
+	/* Maintain 5V rail to HD44780 controller to prevent 4-bit nibble desync.
+	 * 5V rail is cut only during system_enter_sleep() deep power-down. */
 }
 
 static void toggle_display(void)
@@ -972,10 +960,15 @@ void vUi_Task(void *pvParameters)
 				switch (key) {
 				case eUp_Key:
 				case eLeft_Key:
-					/* Previous screen in carousel (skipping unsupported profile screens) */
-					do {
-						current_screen = (current_screen + SCR_TOTAL_SCREENS - 1) % SCR_TOTAL_SCREENS;
-					} while (!is_screen_supported(current_screen));
+					/* Previous screen in carousel */
+					if (current_screen == SCR_STATION) {
+						/* When at Station ID, UP wraps to the end of Diagnostics, avoiding dangerous Actions */
+						current_screen = SCR_VERSION;
+					} else {
+						do {
+							current_screen = (current_screen + SCR_TOTAL_SCREENS - 1) % SCR_TOTAL_SCREENS;
+						} while (!is_screen_supported(current_screen));
+					}
 					need_render = 1;
 					break;
 
@@ -989,11 +982,11 @@ void vUi_Task(void *pvParameters)
 					break;
 
 				case eMenu_Key:
-					/* Quick jump between Station/Sensors (0), Power & Storage (6), and Diagnostics (14) */
-					if (current_screen < SCR_BATTERY) {
-						current_screen = SCR_BATTERY;
-					} else if (current_screen < SCR_ERRORS) {
-						current_screen = SCR_ERRORS;
+					/* Quick jump between sections: Sensors (0) -> Diagnostics (8) -> Actions (14) */
+					if (current_screen < SCR_SDC_STATUS) {
+						current_screen = SCR_SDC_STATUS;
+					} else if (current_screen < SCR_ACT_SEND_HTTP) {
+						current_screen = SCR_ACT_SEND_HTTP;
 					} else {
 						current_screen = SCR_STATION;
 					}
@@ -1087,12 +1080,8 @@ void vUi_Task(void *pvParameters)
 					break;
 
 				case eDisp_Key:
-					/* Screen is active; pressing DSP puts it to sleep and powers down modem if idle */
+					/* Screen is active; pressing DSP blanks the display */
 					sleep_display();
-					if (!gi_data_ready_for_report && !gi_http_in_progress && gprs_modem_active) {
-						gprs_send_cmd_direct("AT+CPOF\r\n");
-						gprs_modem_active = 0;
-					}
 					break;
 
 				default:
@@ -1116,15 +1105,11 @@ void vUi_Task(void *pvParameters)
 
 			inactivity_seconds += secs_to_advance;
 			if (inactivity_seconds >= 60 && gUi_Active) {
-				/* Operator inactivity timeout: turn off LCD and power down modem if idle */
+				/* Operator inactivity timeout: blank the LCD */
 				inactivity_seconds = 0;
 				gUi_Active = 0;
 				if (lcd_active) {
 					sleep_display();
-				}
-				if (!gi_data_ready_for_report && !gi_http_in_progress && gprs_modem_active) {
-					gprs_send_cmd_direct("AT+CPOF\r\n");
-					gprs_modem_active = 0;
 				}
 			}
 

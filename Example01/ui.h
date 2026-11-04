@@ -78,38 +78,36 @@ enum Ui_Gprs_Cmd_Stats{
 	eUi_Gprs_Get_CREG
 };
 
-/* Carousel Screen IDs - Circular Navigation Centered on Station ID */
+/* Carousel Screen IDs - Logical Sequential Hierarchy */
 enum UI_SCREEN_ID {
-	/* Central Home Screen */
-	SCR_STATION = 0,    /* VARSHA-TWS & Station ID (Landing Screen) */
+	/* Group 1: Live Telemetry & Sensors (Screens 0 - 7) */
+	SCR_STATION = 0,        /* 0: VARSHA-TWS & Station ID (Landing Home Screen) */
+	SCR_DATE_TIME,          /* 1: RTC Date & Time */
+	SCR_RAIN,               /* 2: Rainfall Today (TRG only) */
+	SCR_TEMP_HUM,           /* 3: Temperature & Humidity */
+	SCR_WIND,               /* 4: Wind Speed Inst & Avg */
+	SCR_WIND_DIR,           /* 5: Wind Direction */
+	SCR_BATTERY,            /* 6: Battery 1 & Battery 2 Voltages */
+	SCR_SOLAR,              /* 7: Solar Charging Status */
 
-	/* Forward Branch (Press DOWN / RIGHT from Station ID: Sensors & Telemetry) */
-	SCR_DATE_TIME,      /* 1: RTC Date & Time */
-	SCR_RAIN,           /* 2: Rainfall Today */
-	SCR_TEMP_HUM,       /* 3: Temperature & Humidity */
-	SCR_WIND,           /* 4: Wind Speed Inst & Avg */
-	SCR_WIND_DIR,       /* 5: Wind Direction */
-	SCR_BATTERY,        /* 6: Battery 1 & Battery 2 Voltages */
-	SCR_SOLAR,          /* 7: Solar Charging Status */
-
-	/* Deep Middle: Storage & Infrequent Maintenance (Far from Station ID) */
+	/* Group 2: System Diagnostics (Screens 8 - 13) */
 	SCR_SDC_STATUS,         /* 8: MicroSD Storage Card Health */
-	SCR_ACT_USB_COPY,       /* 9: Export Logs to USB Flash Drive (Action) */
-	SCR_ACT_MAIN_FW_UPDATE, /* 10: Update Main Board Firmware (Action) */
-	SCR_ACT_SENS_FW_UPDATE, /* 11: Update Sensor Board Firmware (Action) */
-	SCR_ACT_WIPE_DATA,      /* 12: Wipe All Historical Data & Reset (Action) */
-	SCR_ACT_SLEEP,          /* 13: Cut Off Power / Sleep Now (Action) */
+	SCR_SIM_SIGNAL,         /* 9: SIM & Signal (dBm & CSQ) & Reg */
+	SCR_GPS_LOC,            /* 10: GPS Location Fix */
+	SCR_LAST_LOG,           /* 11: Last Transmitted Log Timestamp */
+	SCR_ERRORS,             /* 12: Packet & Network Error Counters */
+	SCR_VERSION,            /* 13: Firmware Version */
 
-	/* Backward Branch (Press UP / LEFT from Station ID: Critical Diagnostics & Actions) */
-	SCR_ERRORS,         /* 14: Packet & Network Error Counters */
-	SCR_VERSION,        /* 15: Firmware Version */
-	SCR_SIM_SIGNAL,     /* 16: Combined SIM (Airtel/BSNL) + Signal (dBm & CSQ) & Reg */
-	SCR_LAST_LOG,       /* 17: Last Transmitted Log Timestamp */
-	SCR_ACT_SEND_HTTP,  /* 18: Action: Transmit Live & Backlog HTTP Telemetry */
-	SCR_GPS_LOC,        /* 19: Single Unified GPS Location Screen */
-	SCR_ACT_SEND_SMS,   /* 20: Send Test Status SMS (Action) */
+	/* Group 3: Operator Actions (Screens 14 - 20) */
+	SCR_ACT_SEND_HTTP,      /* 14: Action: Transmit Live & Backlog HTTP Telemetry */
+	SCR_ACT_SEND_SMS,       /* 15: Send Test Status SMS (Action) */
+	SCR_ACT_USB_COPY,       /* 16: Export Logs to USB Flash Drive (Action) */
+	SCR_ACT_SENS_FW_UPDATE, /* 17: Update Sensor Board Firmware (Action) */
+	SCR_ACT_MAIN_FW_UPDATE, /* 18: Update Main Board Firmware (Action) */
+	SCR_ACT_WIPE_DATA,      /* 19: Wipe All Historical Data & Reset (Action) */
+	SCR_ACT_SLEEP,          /* 20: Cut Off Power / Sleep Now (Action) */
 
-	SCR_TOTAL_SCREENS   /* Total carousel count = 21 */
+	SCR_TOTAL_SCREENS       /* Total carousel count = 21 */
 };
 
 /* Special Operating Modes */

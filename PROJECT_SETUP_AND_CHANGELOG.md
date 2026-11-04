@@ -740,4 +740,66 @@ To effortlessly synchronize changes between your development laptop and office c
 3. **Firmware Version Bump (`memory.c`)**:
    - Updated version strings to `TWS6-1.0.24`.
 
+---
+
+## 35. Release v1.0.25 — Keypad Hardware Overhaul, Sequential UI Carousel, LPC845 Telemetry Decoding, and Thread-Safe Cellular SD Logging
+
+### 35.1 Overview & Root Causes
+- **Symptom 1**: Keypad matrix freezing after 2–5 seconds, ghost keys bouncing back to the Station ID screen, and UP arrow jumping from Station ID directly into "Send Status SMS".
+- **Symptom 2**: Cellular modem `NETLIGHT` blinking indefinitely without uploading data or logging traces to the MicroSD card, even after the LCD turned off.
+- **Symptom 3**: Solar status remained permanently displayed as `STANDBY` and Battery 2 voltage read 0.0V.
+- **Root Cause 1 (Keypad Matrix Timing & Pin Definitions)**:
+  - Row 0 and Row 1 pins were inverted (`KBD_ROW0_PINNO = 26`, `KBD_ROW1_PINNO = 25`), causing Right Arrow on Row 1 (P3.26) to map to Row 0 Col 3 (`eCalib_Key`), popping up `"No Rain Gauge"` or remaining static.
+  - The 500-loop (~15 µs) settling delay in `Kbd_Scan()` was insufficient for membrane ribbon cable RC capacitance (~20–40 µs with 50 kΩ internal pull-ups), causing floating column lines to read logic 0 on adjacent rows.
+  - `Read_Col_Pressed()` asserted all row pins HIGH inside the column read function before `Kbd_Scan()` finished its row loop, inducing line bounce and ghost keys (such as `eBack_Key` = 7, resetting the carousel back to Station ID).
+  - Debounce logic lacked a verified release state machine: if a key remained held or bounced, `iOld_Key` latched or oscillated, deadlocking the keypad task.
+- **Root Cause 2 (UI Carousel Inversion)**:
+  - `SCR_STATION` was Screen 0 in an unpartitioned carousel. Decrementing index `(0 - 1) % 21 = 20` jumped directly into `SCR_ACT_SEND_SMS` ("Send Status SMS").
+- **Root Cause 3 (Display 5V Cut & Phantom ESD Leakage)**:
+  - Cutting the 5V rail via `$f4;\012` on 60s idle timeout caused LPC1768 3.3V GPIO pins to back-feed power into HD44780 ESD clamp diodes, corrupting 4-bit nibble synchronization upon waking.
+- **Root Cause 4 (LPC845 `$D` Format String Mismatch)**:
+  - LPC845 transmits a 31-field packet ending in `,sc_bat1,sc_bat2,solar_status;`. `sensor.c` format string ended with `%c,%c,%c;` at `lpc845_ver`, ignoring `sc_bat1`, `sc_bat2`, and `solar_status`.
+- **Root Cause 5 (Asynchronous Modem Collision & SDC FatFs Reentrancy)**:
+  - `vUi_Task` dispatched asynchronous `AT+CPOF` commands at 60s inactivity while `vGprs_Task` was still performing cellular registration. Setting `gprs_modem_active = 0` caused `vGprs_Task` to abort boot sync, while the modem remained unpowered-down with `NETLIGHT` blinking.
+  - `sd_log_http()` lacked mutual exclusion with `vDisk_Task` FatFs operations (`_FS_REENTRANT = 0`), risking SPI bus collisions.
+
+### 35.2 Architecture Fixes & Implementation
+1. **Keypad Matrix Hardware Overhaul (`kbd.c`, `kbd.h`)**:
+   - Corrected physical row pin definitions in `kbd.h`:
+     - Row 0: `P3.25` (Top Row: Menu `1`, Up `2`, Calib `3`)
+     - Row 1: `P3.26` (Middle Row: Left `4`, Enter/Set `5`, Right `6`)
+     - Row 2: `P1.21` (Bottom Row: Back `7`, Down `8`, Disp `9`)
+     - Columns: `P0.22` (Col 1), `P0.21` (Col 2), `P0.20` (Col 3)
+   - Restored full 1 ms FreeRTOS tick settling delay (`vTaskDelay(1 / portTICK_RATE_MS)`) after asserting selected row LOW before reading columns.
+   - Cleaned `Read_Col_Pressed()` to strictly read `LPC_GPIO0->FIOPIN` without altering row states.
+   - Implemented 3-state debounce state machine (`KBD_STATE_IDLE`, `KBD_STATE_DEBOUNCE`, `KBD_STATE_WAIT_RELEASE`):
+     - Requires 2 consecutive verified samples (~25 ms) to emit a single key event.
+     - Emits key event strictly once to `XITC_Kbd_Log`.
+     - Requires 2 consecutive cycles (~25 ms) of empty matrix (`iScanned_Key == 0`) before re-arming to `IDLE`.
+2. **Logical Sequential UI Carousel Hierarchy (`ui.h`, `ui.c`)**:
+   - Reordered `UI_SCREEN_ID`:
+     - **Group 1 (Live Sensors)**: 0: `SCR_STATION`, 1: `SCR_DATE_TIME`, 2: `SCR_RAIN`, 3: `SCR_TEMP_HUM`, 4: `SCR_WIND`, 5: `SCR_WIND_DIR`, 6: `SCR_BATTERY`, 7: `SCR_SOLAR`.
+     - **Group 2 (System Diagnostics)**: 8: `SCR_SDC_STATUS`, 9: `SCR_SIM_SIGNAL`, 10: `SCR_GPS_LOC`, 11: `SCR_LAST_LOG`, 12: `SCR_ERRORS`, 13: `SCR_VERSION`.
+     - **Group 3 (Operator Actions)**: 14: `SCR_ACT_SEND_HTTP`, 15: `SCR_ACT_SEND_SMS`, 16: `SCR_ACT_USB_COPY`, 17: `SCR_ACT_SENS_FW_UPDATE`, 18: `SCR_ACT_MAIN_FW_UPDATE`, 19: `SCR_ACT_WIPE_DATA`, 20: `SCR_ACT_SLEEP`.
+   - Navigation guards:
+     - Pressing UP / LEFT from `SCR_STATION` wraps to `SCR_VERSION` (Screen 13), preventing accidental entry into destructive actions.
+     - `MENU` key jumps between sections: Sensors (0) -> Diagnostics (8) -> Actions (14).
+     - `BACK` key returns immediately to `SCR_STATION` (0).
+3. **Display Sleep without 5V Dropping (`ui.c`, `sensor.c`)**:
+   - Kept 5V rail continuously energized during normal operation; removed `$f4;\012` from `sleep_display()` and `vSensor_Task`.
+   - `sleep_display()` turns off backlight and blanks pixels via `eLcd_Off`.
+   - `wake_display()` turns on pixels via `eLcd_On` and activates backlight instantly (< 2 ms) without losing HD44780 4-bit alignment.
+   - 5V rail cut (`$f7;\012`) is strictly reserved for deep sleep via `system_enter_sleep()`.
+4. **LPC845 31-Field Telemetry Decoding (`sensor.c`)**:
+   - Snapshot `sensor_rx_data` to `local_rx_buf[256]` under critical section before parsing.
+   - Aligned `sscanf` format string with LPC845 `main.c:2057` to decode all 31 fields, correctly populating `last_rec_15min_bat1`, `last_rec_15min_bat2` (`sc_bat2`), and `solar_status`.
+   - Solar screen renders `"STATUS: CHARGING"` when `solar_status == 'C' || solar_status == 'Y'`, and `"STATUS: STANDBY "` otherwise.
+5. **Thread-Safe Cellular SD Logging & Modem Lifecycle Ownership (`disk.c`, `disk.h`, `gprs.c`, `ui.c`)**:
+   - Removed direct `AT+CPOF` calls from `vUi_Task`; modem power is managed exclusively and synchronously by `vGprs_Task`.
+   - Protected `sd_log_http()` and `vDisk_Task` with FreeRTOS mutex semaphore `xDiskMutex`.
+   - Added comprehensive diagnostic traces to `httplog.txt` documenting modem initialization, SIM card detection, registration states, APN configuration, signal level, HTTP transmission payload, server status codes, and clean power-down (`AT+CPOF`).
+6. **Firmware Version Bump (`memory.c`)**:
+   - Updated version strings to `TWS6-1.0.25`.
+
+
 

@@ -160,10 +160,6 @@ int Read_Col_Pressed(void) {
 	else if ((port0 & KBD_COL2_MASK) == 0)
 		iCol_Number = 3;
 
-	// set all row pins to logic high
-	LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
-	LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
-
 	return iCol_Number;
 }
 
@@ -186,9 +182,13 @@ int Kbd_Scan(void) {
 
 	for (iRow_No = 0; iRow_No < MAX_ROWS; iRow_No++) {
 		Output_Row(iRow_No);
-		/* Hardware settling delay (~15us at 100MHz) for line capacitance */
-		for (volatile int d = 0; d < 500; d++);
+		/* Full 1ms settling delay for line capacitance & pull-ups */
+		vTaskDelay(1 / portTICK_RATE_MS);
 		iCol_No = Read_Col_Pressed();
+
+		// Restore rows to HIGH immediately after reading columns
+		LPC_GPIO3->FIOSET = (KBD_ROW0_MASK | KBD_ROW1_MASK);
+		LPC_GPIO1->FIOSET = KBD_ROW2_MASK;
 
 		if (iCol_No != 0) {
 			iKey_Value = iRow_No * MAX_ROWS + iCol_No;
@@ -229,11 +229,19 @@ int Kbd_Scan(void) {
 
 /*---------------------------------------------------------------------------------------------------------------------*/
 
+enum {
+	KBD_STATE_IDLE = 0,
+	KBD_STATE_DEBOUNCE,
+	KBD_STATE_WAIT_RELEASE
+};
+
 void vKbd_Task(void *pvParameters)
 {
-	int iOld_Key = 0;
-	int iNew_Key = 0;
-	int iDebounce_Count = 0;
+	int kbd_state = KBD_STATE_IDLE;
+	int candidate_key = 0;
+	int debounce_count = 0;
+	int release_count = 0;
+	int iScanned_Key = 0;
 	static int pins_released = 0;
 
 	XITC_Kbd_Log.sig_key = 0;
@@ -257,26 +265,55 @@ void vKbd_Task(void *pvParameters)
 		} else if (pins_released) {
 			init_kbd_pins();
 			pins_released = 0;
+			kbd_state = KBD_STATE_IDLE;
 			vTaskDelay(50 / portTICK_RATE_MS);
 		}
 
-		iNew_Key = Kbd_Scan(); // Scan matrix for pressed key
-		if (iNew_Key != 0) {
-			if (iNew_Key != iOld_Key) {
-				iOld_Key = iNew_Key;
-				iDebounce_Count = 3; /* 30ms stable hold confirmation */
-			} else if (iDebounce_Count > 0) {
-				iDebounce_Count--;
-				if (iDebounce_Count == 0) {
-					XITC_Kbd_Log.key_value = iNew_Key;
-					XITC_Kbd_Log.sig_key = 1;
-					dbg_last_key = iNew_Key;
-					dbg_key_count++;
-				}
+		iScanned_Key = Kbd_Scan(); // Scan matrix for pressed key
+
+		switch (kbd_state) {
+		case KBD_STATE_IDLE:
+			if (iScanned_Key != 0) {
+				candidate_key = iScanned_Key;
+				debounce_count = 1;
+				kbd_state = KBD_STATE_DEBOUNCE;
 			}
-		} else {
-			iOld_Key = 0;
-			iDebounce_Count = 0;
+			break;
+
+		case KBD_STATE_DEBOUNCE:
+			if (iScanned_Key == candidate_key) {
+				debounce_count++;
+				if (debounce_count >= 2) {
+					/* Stable key confirmed over consecutive cycles (~25ms total hold) */
+					XITC_Kbd_Log.key_value = candidate_key;
+					XITC_Kbd_Log.sig_key = 1;
+					dbg_last_key = candidate_key;
+					dbg_key_count++;
+					release_count = 0;
+					kbd_state = KBD_STATE_WAIT_RELEASE;
+				}
+			} else {
+				/* Noise or contact flutter: discard and return to idle */
+				kbd_state = KBD_STATE_IDLE;
+			}
+			break;
+
+		case KBD_STATE_WAIT_RELEASE:
+			if (iScanned_Key == 0) {
+				release_count++;
+				if (release_count >= 2) {
+					/* Confirmed clean physical release across 2 consecutive cycles */
+					kbd_state = KBD_STATE_IDLE;
+				}
+			} else {
+				/* Key still held down or bouncing */
+				release_count = 0;
+			}
+			break;
+
+		default:
+			kbd_state = KBD_STATE_IDLE;
+			break;
 		}
 	}
 }

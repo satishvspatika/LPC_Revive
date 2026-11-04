@@ -233,12 +233,19 @@ void decode_command(void)
 	int gi_rec_1min_rf;
 	int gi_rec_15min_rf,gi_rec_bat1_adc,gi_rec_bat2_adc;
 	xDateTime_def pkt_time;
+	char local_rx_buf[256];
 
 	char data_rec;
 
 	if (sensor_recv_state == CMD_RECVD){
-		chr1 = sensor_rx_data[1];
-		chr2 = sensor_rx_data[2];
+		taskENTER_CRITICAL();
+		strncpy(local_rx_buf, sensor_rx_data, sizeof(local_rx_buf) - 1);
+		local_rx_buf[sizeof(local_rx_buf) - 1] = '\0';
+		sensor_recv_state = WAITING_FOR_STX;
+		taskEXIT_CRITICAL();
+
+		chr1 = local_rx_buf[1];
+		chr2 = local_rx_buf[2];
 
 		switch(chr1){
 
@@ -246,9 +253,12 @@ void decode_command(void)
 			{
 				int t_rf = 0, t_bat = 0, t_ltemp = 0, t_lhum = 0, t_lws = 0, t_lwd = 0, t_iws = 0, t_lws_sec = 0;
 				int t_ptemp = 0, t_phum = 0, t_pws = 0, t_pwd = 0, t_pws_sec = 0;
+				int t_sc_bat1 = 0, t_sc_bat2 = 0;
+				char c_solar = 'N';
 
-				/* Always decode live packet using 32-bit temps to prevent .bss memory corruption */
-				int n_fields = sscanf(sensor_rx_data, "$D%04d%02d%02d%02d%02d%02d,%04d%02d%02d%02d%02d%02d,%04d,%04d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%c,%c,%c;",
+				/* Full 31-field decoding matching LPC845 $D telemetry transmission:
+				 * $D<14-digit present time>,<14-digit slot time>,<rf>,<bat1>,<ltemp>,<lhum>,<lws>,<lwd>,<iws>,<lws_sec>,<ptemp>,<phum>,<pws>,<pwd>,<pws_sec>,<gprs_pwr>,<usb_pwr>,<ver>,<sc_bat1>,<sc_bat2>,<solar_status>; */
+				int n_fields = sscanf(local_rx_buf, "$D%04d%02d%02d%02d%02d%02d,%04d%02d%02d%02d%02d%02d,%04d,%04d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%c,%c,%c,%04d,%04d,%c;",
 						&pkt_time.year,
 						&pkt_time.month,
 						&pkt_time.date,
@@ -276,7 +286,10 @@ void decode_command(void)
 						&t_pws_sec,
 						&gprs_pwr,
 						&usb_lcd_pwr,
-						&lpc845_ver);
+						&lpc845_ver,
+						&t_sc_bat1,
+						&t_sc_bat2,
+						&c_solar);
 
 				if (n_fields >= 26) {
 					last_rec_15min_rf     = (uint16_t)t_rf;
@@ -293,6 +306,15 @@ void decode_command(void)
 					present_ws            = (uint16_t)t_pws;
 					present_wd            = (uint16_t)t_pwd;
 					present_ws_sec_cnt    = (uint16_t)t_pws_sec;
+				}
+				if (n_fields >= 29 && t_sc_bat1 > 0) {
+					last_rec_15min_bat1   = (uint16_t)t_sc_bat1;
+				}
+				if (n_fields >= 30 && t_sc_bat2 > 0) {
+					last_rec_15min_bat2   = (uint16_t)t_sc_bat2;
+				}
+				if (n_fields >= 31) {
+					solar_status          = c_solar;
 				}
 			}
 
@@ -516,21 +538,11 @@ void vSensor_Task(void *pvParameters)
 			vTaskDelay(500 / portTICK_RATE_MS);
 			usb_lcd_pwr = 'u';
 		}
-		else if(gUi_Active) {
-			// turn on 5v
-			if (usb_lcd_pwr == 'u'){
-				sensor_send_cmd_direct("$n4;\012");
-				vTaskDelay(500 / portTICK_RATE_MS);
-				usb_lcd_pwr = 'U';
-			}
-		}
-		else if(!gUi_Active) {
-			// turn off 5v
-			if (usb_lcd_pwr == 'U'){
-				sensor_send_cmd_direct("$f4;\012");
-				vTaskDelay(500 / portTICK_RATE_MS);
-				usb_lcd_pwr = 'u';
-			}
+		else if (usb_lcd_pwr != 'U') {
+			/* Ensure 5V rail is active for sensors and HD44780 controller */
+			sensor_send_cmd_direct("$n4;\012");
+			vTaskDelay(200 / portTICK_RATE_MS);
+			usb_lcd_pwr = 'U';
 		}
 
 		if(get_rec == 1){
