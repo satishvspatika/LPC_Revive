@@ -75,6 +75,7 @@ int data_not_stored_in_flash;
 int gi_data_ready_for_report;
 int gi_manual_http_trigger;
 int gprs_modem_active;
+int gi_http_in_progress;
 int update_present_day_flag;
 int update_previous_day_flag;
 int sleep_mode;

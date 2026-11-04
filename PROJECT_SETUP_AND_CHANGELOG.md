@@ -715,4 +715,29 @@ To effortlessly synchronize changes between your development laptop and office c
 | **Using `%f` in `snprintf` with newlib-nano without `-u _printf_float`** | In newlib-nano (`--specs=nano.specs`), `%f` float formatting allocates hundreds of bytes on the stack and locks or corrupts FreeRTOS task stacks (`vUi_Task` has only 320 words). | Always use integer-based division and modulo (`%d.%01d`) for formatting floats on 16x2 LCD screens. |
 | **Entering UI task loop without flushing keypad queue after splash screen** | Contact chatter or rail voltage ramp during boot can latch a false key into `sig_key`. When `vUi_Task` enters its loop, it executes this key on Screen 0, instantly jumping to Screen 1 (Date & Time). | Flush `XITC_Kbd_Log.sig_key = 0; XITC_Kbd_Log.key_value = 0;` immediately after the splash screen delay before entering `for(;;)`. |
 | **Using `vTaskDelay` while holding matrix rows LOW during keypad scan** | Context switches while a row pin is LOW cause line crosstalk, float glitches, and pin state contention with other tasks. | Use calibrated microsecond settling loops (~15 µs at 100 MHz) and immediately restore all rows to logic HIGH (`FIOSET`) after reading. |
+| **Omitting `$f4;\012` 5V rail cut and `AT+CPOF` modem power down on UI idle** | Display 5V rail stays energized and SIM7600 modem keeps NETLIGHT blinking indefinitely during unattended idle periods, draining station battery. | Send `$f4;\012` to LPC845 in `sleep_display()`, and issue `AT+CPOF` in `vUi_Task` 60s timeout and DSP key handler whenever no HTTP session is in flight. |
+
+---
+
+## 34. Release v1.0.24 — LCD 5V Rail Power-Down & GPRS Modem Shutdown on Inactivity and DSP Key
+
+### 34.1 Overview & Root Causes
+- **Symptom 1**: The LCD and GPRS modem did not go off after the operator idle timeout (60s) or when the DSP key was pressed, leaving the LCD powered and the SIM7600 `NETLIGHT` blinking indefinitely without uploading data.
+- **Symptom 2**: Keypad wakeups unnecessarily powered up the cellular modem (`select_sim_0(); gprs_modem_active = 1;`), triggering prolonged radio wakeups and battery drain even during basic local screen navigation.
+- **Root Cause 1**: `sleep_display()` turned off display pixels and backlight but omitted `$f4;\012`, leaving LPC845 pin 28 (`LCD_PWR_STDN`) 5V logic energized. Furthermore, `vSensor_Task` lacked an `else if (!gUi_Active)` branch to cut the 5V rail.
+- **Root Cause 2**: `AT+CPOF` shutdown had been removed from `vUi_Task` under the assumption that `vGprs_Task` would exclusively manage modem sleep. However, `vGprs_Task` only powers down upon completing a 15-minute slot report. During boot sync timeouts, idle periods, or following manual UI wakes, the modem remained powered indefinitely.
+
+### 34.2 Architecture Fixes & Implementation
+1. **LCD 5V Rail Power Management (`ui.c`, `sensor.c`)**:
+   - `sleep_display()`: Immediately turns off backlight, dispatches `eLcd_Off`, dispatches `$f4;\012` via `sensor_send_cmd_direct("$f4;\012")`, and updates `usb_lcd_pwr = 'u'`.
+   - `wake_display()`: Dispatches `$n4;\012` via `sensor_send_cmd_direct("$n4;\012")`, updates `usb_lcd_pwr = 'U'`, delays 120ms for 5V rail and HD44780 power-on reset stabilization, dispatches `eLcd_Init` for full 4-bit re-initialization, dispatches `eLcd_On`, and activates backlight.
+   - `vSensor_Task`: Added synchronized `else if (!gUi_Active && usb_lcd_pwr == 'U')` block to ensure 5V rail is deactivated whenever the UI is inactive.
+2. **GPRS Modem Inactivity Power-Down (`ui.c`, `gprs.c`, `globals.h`)**:
+   - Introduced `gi_http_in_progress` global state flag, set to `1` when `gi_data_ready_for_report` initiates HTTP telemetry and reset to `0` when `AT+CPOF` is issued.
+   - In `vUi_Task`: Both the 60-second operator inactivity timeout and `case eDisp_Key:` check `if (!gi_data_ready_for_report && !gi_http_in_progress && gprs_modem_active)`. If no HTTP session is active, `AT+CPOF\r\n` is immediately dispatched and `gprs_modem_active = 0`, extinguishing the `NETLIGHT` LED.
+   - In `vUi_Task` screen wake: Removed automatic cellular modem power-up on keypresses. Display navigation is strictly local.
+   - In `vGprs_Task`: If modem was shut down by UI inactivity before boot registration completed, `boot_sync_done = 1` is immediately asserted to avoid polling a sleeping modem.
+3. **Firmware Version Bump (`memory.c`)**:
+   - Updated version strings to `TWS6-1.0.24`.
+
 

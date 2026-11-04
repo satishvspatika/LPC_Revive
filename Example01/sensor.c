@@ -524,6 +524,14 @@ void vSensor_Task(void *pvParameters)
 				usb_lcd_pwr = 'U';
 			}
 		}
+		else if(!gUi_Active) {
+			// turn off 5v
+			if (usb_lcd_pwr == 'U'){
+				sensor_send_cmd_direct("$f4;\012");
+				vTaskDelay(500 / portTICK_RATE_MS);
+				usb_lcd_pwr = 'u';
+			}
+		}
 
 		if(get_rec == 1){
 			sprintf(sensor_loc_buf, "$G20210204030000;");

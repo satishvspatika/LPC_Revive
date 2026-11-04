@@ -774,13 +774,24 @@ static void wake_display(void)
 	gUi_Active = 1;
 	lcd_active = 1;
 
-	/* 1. Turn on LCD display pixels */
+	/* 1. Request LPC845 to restore 5V rail to LCD */
+	sensor_send_cmd_direct("$n4;\012");
+	usb_lcd_pwr = 'U';
+	vTaskDelay(120 / portTICK_RATE_MS); /* Allow 5V rail & HD44780 power-on reset to settle */
+
+	/* 2. Re-initialize HD44780 in 4-bit mode */
+	wait_for_lcd_idle();
+	XITC_Ui_Lcd.lcd_cmd = eLcd_Init;
+	XITC_Ui_Lcd.sig = 1;
+	wait_for_lcd_idle();
+
+	/* 3. Turn on LCD display pixels */
 	wait_for_lcd_idle();
 	XITC_Ui_Lcd.lcd_cmd = eLcd_On;
 	XITC_Ui_Lcd.sig = 1;
 	wait_for_lcd_idle();
 
-	/* 2. Directly activate backlight hardware pin */
+	/* 4. Directly activate backlight hardware pin */
 	lcd_backlight_on();
 }
 
@@ -792,11 +803,15 @@ static void sleep_display(void)
 	/* 1. Directly deactivate backlight hardware pin */
 	lcd_backlight_off();
 
-	/* 2. Turn off LCD display pixels (HD44780 controller remains powered at 5V, 4-bit mode preserved) */
+	/* 2. Turn off LCD display pixels */
 	wait_for_lcd_idle();
 	XITC_Ui_Lcd.lcd_cmd = eLcd_Off;
 	XITC_Ui_Lcd.sig = 1;
 	wait_for_lcd_idle();
+
+	/* 3. Request LPC845 to cut 5V rail to LCD */
+	sensor_send_cmd_direct("$f4;\012");
+	usb_lcd_pwr = 'u';
 }
 
 static void toggle_display(void)
@@ -930,10 +945,6 @@ void vUi_Task(void *pvParameters)
 			if (!lcd_active) {
 				wake_display();
 				need_render = 1;
-				if (!gprs_modem_active) {
-					select_sim_0();
-					gprs_modem_active = 1;
-				}
 				/* If key was DSP key, wake is already achieved; do not toggle back off */
 				if (key == eDisp_Key) {
 					continue;
@@ -1076,8 +1087,12 @@ void vUi_Task(void *pvParameters)
 					break;
 
 				case eDisp_Key:
-					/* Screen is active; pressing DSP puts it to sleep */
+					/* Screen is active; pressing DSP puts it to sleep and powers down modem if idle */
 					sleep_display();
+					if (!gi_data_ready_for_report && !gi_http_in_progress && gprs_modem_active) {
+						gprs_send_cmd_direct("AT+CPOF\r\n");
+						gprs_modem_active = 0;
+					}
 					break;
 
 				default:
@@ -1101,11 +1116,15 @@ void vUi_Task(void *pvParameters)
 
 			inactivity_seconds += secs_to_advance;
 			if (inactivity_seconds >= 60 && gUi_Active) {
-				/* Operator inactivity timeout: turn off LCD backlight to save power without cutting MCU or locking keypad */
+				/* Operator inactivity timeout: turn off LCD and power down modem if idle */
 				inactivity_seconds = 0;
 				gUi_Active = 0;
 				if (lcd_active) {
 					sleep_display();
+				}
+				if (!gi_data_ready_for_report && !gi_http_in_progress && gprs_modem_active) {
+					gprs_send_cmd_direct("AT+CPOF\r\n");
+					gprs_modem_active = 0;
 				}
 			}
 

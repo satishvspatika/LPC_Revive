@@ -2807,6 +2807,7 @@ void vGprs_Task( void *pvParameters){
 	ftp_rec_no = 0;
 	get_gps = 0;
 	gprs_modem_active = 1;
+	gi_http_in_progress = 0;
 	gi_manual_http_trigger = 0;
 
 	// init pins and then UART meant for GPRS
@@ -2910,28 +2911,33 @@ void vGprs_Task( void *pvParameters){
 		 * Poll network registration every 3 seconds after power-on.
 		 * As soon as registered, immediately transmit initial telemetry packet.
 		 * If unable to register after 90 seconds (no SIM or no network),
-		 * shut down the modem to save battery and turn off NETLIGHT. */
+		 * shut down the modem to save battery and turn off NETLIGHT.
+		 * If modem was powered down externally (e.g. UI timeout), mark boot sync done. */
 		if (!boot_sync_done) {
-			boot_wait_ticks++;
-			if ((boot_wait_ticks % 3) == 0 && gi_sim_reg == 0 && gi_sim_state == 1) {
-				check_sim_registration();
-				if (gi_sim_reg == 1) {
-					get_signal_level();
-					get_apn();
+			if (!gprs_modem_active) {
+				boot_sync_done = 1;
+			} else {
+				boot_wait_ticks++;
+				if ((boot_wait_ticks % 3) == 0 && gi_sim_reg == 0 && gi_sim_state == 1) {
+					check_sim_registration();
+					if (gi_sim_reg == 1) {
+						get_signal_level();
+						get_apn();
+					}
 				}
-			}
 
-			if (gi_sim_state == 1 && gi_sim_reg == 1) {
-				boot_sync_done = 1;
-				sd_log_http("NET: SIM registered on network. Initial boot telemetry sync triggered.");
-				gi_manual_http_trigger = 1;
-				gi_data_ready_for_report = 1;
-			} else if (boot_wait_ticks >= 90) {
-				boot_sync_done = 1;
-				sd_log_http("NET: Boot registration timeout (90s). Shutting down modem to conserve battery.");
-				Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
-				gprs_modem_active = 0;
-				sd_log_http("NET: Modem powered down. NETLIGHT LED off.");
+				if (gi_sim_state == 1 && gi_sim_reg == 1) {
+					boot_sync_done = 1;
+					sd_log_http("NET: SIM registered on network. Initial boot telemetry sync triggered.");
+					gi_manual_http_trigger = 1;
+					gi_data_ready_for_report = 1;
+				} else if (boot_wait_ticks >= 90) {
+					boot_sync_done = 1;
+					sd_log_http("NET: Boot registration timeout (90s). Shutting down modem to conserve battery.");
+					Send_And_Check_Gprs("AT+CPOF\r\n", "OK", "ERROR", 3000);
+					gprs_modem_active = 0;
+					sd_log_http("NET: Modem powered down. NETLIGHT LED off.");
+				}
 			}
 		}
 
@@ -3093,6 +3099,7 @@ void vGprs_Task( void *pvParameters){
 		if(gi_data_ready_for_report == 1){
 			char log_tmp[160];
 			gi_data_ready_for_report = 0;
+			gi_http_in_progress = 1;
 
 			/* Wake up SIM7600 cellular engine if sleeping */
 			if (!gprs_modem_active) {
@@ -3319,6 +3326,7 @@ void vGprs_Task( void *pvParameters){
 			gprs_modem_active = 0;
 			sd_log_http("NET: Modem powered down. NETLIGHT LED off. Entering sleep.");
 			vTaskDelay(200 / portTICK_RATE_MS);
+			gi_http_in_progress = 0;
 
 			sleep_mode = 1;
 		}
